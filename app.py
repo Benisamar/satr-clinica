@@ -13,12 +13,12 @@ st.set_page_config(
 
 # Inicializar bases de datos en la memoria de la sesión si no existen
 if "users_db" not in st.session_state:
-    # Usuario por defecto para pruebas
     st.session_state.users_db = {
         "admin": {
             "password": "admin123",
             "email": "admin@clinica.com",
             "nombre": "Administrador Principal",
+            "rol": "Personal de Salud",
         }
     }
 
@@ -33,7 +33,7 @@ st.sidebar.title("🔐 Panel de Acceso - S.A.T.R.")
 
 if st.session_state.logged_in_user is None:
     opcion_auth = st.sidebar.radio(
-        "Seleccione una opción:", ["Iniciar Sesión", "Registrarse como Médico"]
+        "Seleccione una opción:", ["Iniciar Sesión", "Registrarse"]
     )
 
     if opcion_auth == "Iniciar Sesión":
@@ -48,19 +48,22 @@ if st.session_state.logged_in_user is None:
                 == password_input
             ):
                 st.session_state.logged_in_user = usuario_input
-                st.sidebar.success(f"¡Bienvenido, Dr(a). {usuario_input}!")
+                st.sidebar.success(f"¡Bienvenido(a), {usuario_input}!")
                 st.rerun()
             else:
                 st.sidebar.error("Usuario o contraseña incorrectos.")
 
     else:
-        st.sidebar.subheader("📝 Nuevo Registro Médico")
+        st.sidebar.subheader("📝 Nuevo Registro")
         nuevo_user = st.sidebar.text_input("Crear Nombre de Usuario")
         nuevo_pass = st.sidebar.text_input(
             "Crear Contraseña", type="password"
         )
-        nuevo_correo = st.sidebar.text_input("Correo Electrónico (para reportes)")
+        nuevo_correo = st.sidebar.text_input("Correo Electrónico")
         nuevo_nombre = st.sidebar.text_input("Nombre y Apellido Completo")
+        # Rol fijo como Personal de Salud
+        nuevo_rol = "Personal de Salud"
+        st.sidebar.info("📌 Rol asignado: **Personal de Salud**")
 
         if st.sidebar.button("Registrarse"):
             if (
@@ -81,37 +84,34 @@ if st.session_state.logged_in_user is None:
                     "password": nuevo_pass,
                     "email": nuevo_correo,
                     "nombre": nuevo_nombre,
+                    "rol": nuevo_rol,
                 }
                 st.sidebar.success(
                     "¡Registro exitoso! Ahora inicie sesión en la pestaña anterior."
                 )
 
     st.sidebar.info(
-        "⚠️ **Sistema Protegido:** Inicie sesión o regístrese para acceder al módulo clínico."
+        "⚠️ **Sistema Protegido:** Inicie sesión para acceder al módulo."
     )
 
 else:
     # Usuario autenticado
     user_actual = st.session_state.logged_in_user
-    datos_medico = st.session_state.users_db[user_actual]
+    datos_usuario = st.session_state.users_db[user_actual]
 
-    st.sidebar.success(f"Conectado como:\n**{datos_medico['nombre']}**")
-    st.sidebar.write(f"📧 Correo: `{datos_medico['email']}`")
+    st.sidebar.success(
+        f"Conectado como:\n**{datos_usuario['nombre']}**\n\n*Rol:* {datos_usuario['rol']}"
+    )
+    st.sidebar.write(f"📧 Correo: `{datos_usuario['email']}`")
 
     if st.sidebar.button("Cerrar Sesión"):
         st.session_state.logged_in_user = None
         st.rerun()
 
-    st.sidebar.markdown("---")
-    st.sidebar.info(
-        "💡 Consejo: Use su correo registrado para recibir o verificar copias de seguridad de sus expedientes."
-    )
-
 # --- CUERPO PRINCIPAL DE LA APLICACIÓN ---
 if st.session_state.logged_in_user is None:
-    # Pantalla de bloqueo si no ha iniciado sesión
     st.warning(
-        "🔒 **Acceso Restringido:** Por favor, inicie sesión o regístrese en la barra lateral izquierda para utilizar el sistema S.A.T.R."
+        "🔒 **Acceso Restringido:** Por favor, inicie sesión o regístrese en la barra lateral izquierda."
     )
     st.image(
         "https://images.unsplash.com/photo-1576091160399-112ba8d25d1d?auto=format&fit=crop&w=1000&q=80",
@@ -120,12 +120,10 @@ if st.session_state.logged_in_user is None:
     )
 
 else:
-    # Sistema Desbloqueado para el Médico
     st.title(
         "📋 S.A.T.R. - Módulo de Validación, Análisis y Trazabilidad Clínica"
     )
 
-    # Pestañas de navegación interna
     tab1, tab2, tab3 = st.tabs(
         [
             "🚀 Validación y Generación QR",
@@ -134,7 +132,7 @@ else:
         ]
     )
 
-    # --- PESTAÑA 1: VALIDACIÓN MANUAL Y QR ---
+    # --- PESTAÑA 1 ---
     with tab1:
         st.subheader("📝 Módulo de Validación y Generación de QR en Vivo")
 
@@ -145,24 +143,24 @@ else:
                 "ID o Código de Historia Clínica",
                 placeholder="Ej: HC-2026-089",
             )
-            medico_tratante = st.text_input(
-                "Médico Tratante", value=datos_medico["nombre"]
+            responsable = st.text_input(
+                "Responsable / Auditor", value=datos_usuario["nombre"]
             )
             especialidad = st.selectbox(
-                "Especialidad Médica",
+                "Especialidad / Área",
                 [
+                    "Registro y Estadística de la Salud",
                     "Medicina General",
                     "Pediatría",
                     "Cardiología",
                     "Ginecología",
                     "Cirugía",
-                    "Registro y Estadística",
                 ],
             )
 
         with col2:
             st.markdown("**Requisitos Obligatorios:**")
-            firma = st.checkbox("¿Cuenta con firma y sello del médico?")
+            firma = st.checkbox("¿Cuenta con firma y sello médico?")
             consentimiento = st.checkbox(
                 "¿Tiene el consentimiento informado adjunto?"
             )
@@ -171,18 +169,16 @@ else:
 
         if st.button("🚀 Evaluar, Bloquear Errores y Generar QR"):
             if not hc_id:
-                st.error(
-                    "Por favor, ingrese el ID o código de la historia clínica."
-                )
+                st.error("Por favor, ingrese el código de la historia clínica.")
             elif firma and consentimiento and cie10 and lab:
                 st.success(
                     f"🎉 ¡Expediente {hc_id} aprobado con éxito! Estado: 🟢 VERDE (Completo y Aprobado)"
                 )
 
-                # Guardar en el historial del usuario
                 registro_revision = {
-                    "Medico": datos_medico["nombre"],
-                    "Correo": datos_medico["email"],
+                    "Responsable": datos_usuario["nombre"],
+                    "Rol": datos_usuario["rol"],
+                    "Correo": datos_usuario["email"],
                     "Historia_Clinica": hc_id,
                     "Especialidad": especialidad,
                     "Estado": "APROBADO (VERDE)",
@@ -190,8 +186,7 @@ else:
                 }
                 st.session_state.historial_global.append(registro_revision)
 
-                # Generar Código QR
-                qr_data = f"SATR - HC: {hc_id} | Medico: {medico_tratante} | Esp: {especialidad} | Estado: APROBADO (VERDE) | Correo: {datos_medico['email']}"
+                qr_data = f"SATR - HC: {hc_id} | Resp: {responsable} ({datos_usuario['rol']}) | Área: {especialidad} | Estado: VERDE"
                 img = qrcode.make(qr_data)
                 buffered = BytesIO()
                 img.save(buffered, format="PNG")
@@ -202,31 +197,22 @@ else:
                     f'<img src="data:image/png;base64,{img_str}" width="200">',
                     unsafe_allow_html=True,
                 )
-                st.info(
-                    f"ℹ️ Este código QR incluye la trazabilidad digital y está vinculado al correo del médico: `{datos_medico['email']}`."
-                )
             else:
                 st.error(
-                    "❌ Expediente incompleto. Estado: 🔴 ROJO / AMARILLO (Faltan requisitos legales obligatorios)."
+                    "❌ Expediente incompleto. Estado: 🔴 ROJO / AMARILLO (Faltan requisitos legales)."
                 )
 
-    # --- PESTAÑA 2: ANALIZADOR INTELIGENTE DE ARCHIVOS ---
+    # --- PESTAÑA 2 ---
     with tab2:
         st.subheader("🤖 Analizador Automático de Expedientes Digitales")
-        st.write(
-            "Sube el documento del expediente (texto, notas clínicas o informe médico) para que el sistema verifique automáticamente los elementos obligatorios."
-        )
-
         archivo_subido = st.file_uploader(
-            "Cargar archivo del expediente (.txt, .csv o notas)",
-            type=["txt", "csv"],
+            "Cargar archivo del expediente (.txt o .csv)", type=["txt", "csv"]
         )
 
         if archivo_subido is not None:
-            # Leer contenido del archivo
-            contenido_bytes = archivo_subido.read()
-            texto_archivo = contenido_bytes.decode("utf-8", errors="ignore")
-
+            texto_archivo = archivo_subido.read().decode(
+                "utf-8", errors="ignore"
+            )
             st.text_area(
                 "Vista previa del contenido analizado:",
                 texto_archivo[:500] + "...",
@@ -234,7 +220,6 @@ else:
             )
 
             if st.button("🔍 Analizar Calidad del Archivo"):
-                # Análisis automático de palabras clave
                 palabras_clave = [
                     "firma",
                     "consentimiento",
@@ -242,48 +227,42 @@ else:
                     "laboratorio",
                     "diagnóstico",
                 ]
-                encontrados = []
-                faltantes = []
-
-                for palabra in palabras_clave:
-                    if palabra.lower() in texto_archivo.lower():
-                        encontrados.append(palabra)
-                    else:
-                        faltantes.append(palabra)
+                encontrados = [
+                    p for p in palabras_clave if p in texto_archivo.lower()
+                ]
+                faltantes = [
+                    p for p in palabras_clave if p not in texto_archivo.lower()
+                ]
 
                 st.markdown("### 📊 Resultados del Análisis:")
                 st.success(f"✅ Elementos detectados: {', '.join(encontrados)}")
                 if faltantes:
                     st.warning(
-                        f"⚠️ Elementos ausentes en el texto: {', '.join(faltantes)}"
+                        f"⚠️ Elementos ausentes: {', '.join(faltantes)}"
                     )
                 else:
-                    st.info(
-                        "🌟 ¡El archivo cuenta con todas las menciones clave auditadas!"
-                    )
+                    st.info("🌟 ¡El archivo cuenta con todas las menciones clave!")
 
-    # --- PESTAÑA 3: HISTORIAL DE REVISIONES ---
+    # --- PESTAÑA 3 ---
     with tab3:
         st.subheader("📊 Historial de Expedientes Revisados")
         st.write(
-            f"Listado de auditorías realizadas por el/la Dr(a). **{datos_medico['nombre']}**:"
+            f"Listado de auditorías registradas por: **{datos_usuario['nombre']}** ({datos_usuario['rol']})"
         )
 
-        # Filtrar solo el historial del médico conectado (o mostrar todo si es admin)
         if user_actual == "admin":
             historial_filtrado = st.session_state.historial_global
         else:
             historial_filtrado = [
                 h
                 for h in st.session_state.historial_global
-                if h["Medico"] == datos_medico["nombre"]
+                if h["Responsable"] == datos_usuario["nombre"]
             ]
 
         if historial_filtrado:
             df_historial = pd.DataFrame(historial_filtrado)
             st.dataframe(df_historial, use_container_width=True)
 
-            # Opción para descargar reporte en CSV
             csv = df_historial.to_csv(index=False).encode("utf-8")
             st.download_button(
                 label="📥 Descargar Historial en CSV",
@@ -292,6 +271,4 @@ else:
                 mime="text/csv",
             )
         else:
-            st.info(
-                "Aún no hay expedientes evaluados en esta sesión. ¡Realiza tu primera validación en la primera pestaña!"
-            )
+            st.info("Aún no hay expedientes evaluados en esta sesión.")
