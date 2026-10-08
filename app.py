@@ -18,7 +18,7 @@ if "users_db" not in st.session_state:
             "password": "admin123",
             "email": "admin@clinica.com",
             "nombre": "Administrador Principal",
-            "rol": "Personal de Salud",
+            "tipo": "Pasante",
         }
     }
 
@@ -61,9 +61,9 @@ if st.session_state.logged_in_user is None:
         )
         nuevo_correo = st.sidebar.text_input("Correo Electrónico")
         nuevo_nombre = st.sidebar.text_input("Nombre y Apellido Completo")
-        # Rol fijo como Personal de Salud
-        nuevo_rol = "Personal de Salud"
-        st.sidebar.info("📌 Rol asignado: **Personal de Salud**")
+        # Asignar directamente como Pasante
+        nuevo_tipo = "Pasante"
+        st.sidebar.info("📌 Perfil asignado: **Pasante**")
 
         if st.sidebar.button("Registrarse"):
             if (
@@ -84,7 +84,7 @@ if st.session_state.logged_in_user is None:
                     "password": nuevo_pass,
                     "email": nuevo_correo,
                     "nombre": nuevo_nombre,
-                    "rol": nuevo_rol,
+                    "tipo": nuevo_tipo,
                 }
                 st.sidebar.success(
                     "¡Registro exitoso! Ahora inicie sesión en la pestaña anterior."
@@ -100,7 +100,7 @@ else:
     datos_usuario = st.session_state.users_db[user_actual]
 
     st.sidebar.success(
-        f"Conectado como:\n**{datos_usuario['nombre']}**\n\n*Rol:* {datos_usuario['rol']}"
+        f"Conectado como:\n**{datos_usuario['nombre']}**\n\n*{datos_usuario['tipo']}*"
     )
     st.sidebar.write(f"📧 Correo: `{datos_usuario['email']}`")
 
@@ -177,7 +177,7 @@ else:
 
                 registro_revision = {
                     "Responsable": datos_usuario["nombre"],
-                    "Rol": datos_usuario["rol"],
+                    "Tipo": datos_usuario["tipo"],
                     "Correo": datos_usuario["email"],
                     "Historia_Clinica": hc_id,
                     "Especialidad": especialidad,
@@ -186,7 +186,7 @@ else:
                 }
                 st.session_state.historial_global.append(registro_revision)
 
-                qr_data = f"SATR - HC: {hc_id} | Resp: {responsable} ({datos_usuario['rol']}) | Área: {especialidad} | Estado: VERDE"
+                qr_data = f"SATR - HC: {hc_id} | Resp: {responsable} ({datos_usuario['tipo']}) | Área: {especialidad} | Estado: VERDE"
                 img = qrcode.make(qr_data)
                 buffered = BytesIO()
                 img.save(buffered, format="PNG")
@@ -247,7 +247,7 @@ else:
     with tab3:
         st.subheader("📊 Historial de Expedientes Revisados")
         st.write(
-            f"Listado de auditorías registradas por: **{datos_usuario['nombre']}** ({datos_usuario['rol']})"
+            f"Listado de auditorías registradas por: **{datos_usuario['nombre']}** ({datos_usuario['tipo']})"
         )
 
         if user_actual == "admin":
@@ -272,3 +272,4 @@ else:
             )
         else:
             st.info("Aún no hay expedientes evaluados en esta sesión.")
+        
