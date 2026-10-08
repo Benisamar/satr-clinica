@@ -1,5 +1,7 @@
 import base64
 from io import BytesIO
+import json
+import os
 import pandas as pd
 import qrcode
 import streamlit as st
@@ -11,9 +13,21 @@ st.set_page_config(
     layout="wide",
 )
 
-# Inicializar bases de datos en la memoria de la sesión si no existen
-if "users_db" not in st.session_state:
-    st.session_state.users_db = {
+# Archivos locales para guardar los datos de forma permanente
+USER_FILE = "usuarios_satr.json"
+HISTORY_FILE = "historial_satr.json"
+
+
+# Funciones para cargar y guardar datos permanentemente
+def cargar_usuarios():
+    if os.path.exists(USER_FILE):
+        try:
+            with open(USER_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    # Usuario por defecto inicial
+    return {
         "admin": {
             "password": "admin123",
             "email": "admin@clinica.com",
@@ -22,11 +36,36 @@ if "users_db" not in st.session_state:
         }
     }
 
+
+def guardar_usuarios(users):
+    with open(USER_FILE, "w", encoding="utf-8") as f:
+        json.dump(users, f, ensure_ascii=False, indent=4)
+
+
+def cargar_historial():
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return []
+
+
+def guardar_historial(history):
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=4)
+
+
+# Inicializar variables de sesión con los datos permanentes
+if "users_db" not in st.session_state:
+    st.session_state.users_db = cargar_usuarios()
+
 if "logged_in_user" not in st.session_state:
     st.session_state.logged_in_user = None
 
 if "historial_global" not in st.session_state:
-    st.session_state.historial_global = []
+    st.session_state.historial_global = cargar_historial()
 
 # --- DISEÑO DE LA BARRA LATERAL: AUTENTICACIÓN ---
 st.sidebar.title("🔐 Panel de Acceso - S.A.T.R.")
@@ -61,7 +100,6 @@ if st.session_state.logged_in_user is None:
         )
         nuevo_correo = st.sidebar.text_input("Correo Electrónico")
         nuevo_nombre = st.sidebar.text_input("Nombre y Apellido Completo")
-        # Asignar directamente como Pasante
         nuevo_tipo = "Pasante"
         st.sidebar.info("📌 Perfil asignado: **Pasante**")
 
@@ -86,8 +124,10 @@ if st.session_state.logged_in_user is None:
                     "nombre": nuevo_nombre,
                     "tipo": nuevo_tipo,
                 }
+                # Guardar permanentemente en el archivo JSON
+                guardar_usuarios(st.session_state.users_db)
                 st.sidebar.success(
-                    "¡Registro exitoso! Ahora inicie sesión en la pestaña anterior."
+                    "¡Registro exitoso y guardado! Ahora inicie sesión en la pestaña anterior."
                 )
 
     st.sidebar.info(
@@ -185,6 +225,8 @@ else:
                     "Fecha": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
                 }
                 st.session_state.historial_global.append(registro_revision)
+                # Guardar el historial permanentemente
+                guardar_historial(st.session_state.historial_global)
 
                 qr_data = f"SATR - HC: {hc_id} | Resp: {responsable} ({datos_usuario['tipo']}) | Área: {especialidad} | Estado: VERDE"
                 img = qrcode.make(qr_data)
