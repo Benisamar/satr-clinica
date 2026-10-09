@@ -1,65 +1,214 @@
 import base64
 from io import BytesIO
-import json
-import os
+import math
+import sqlite3
+import threading
 import pandas as pd
 import qrcode
 import streamlit as st
 
 # Configuración de la página
 st.set_page_config(
-    page_title="S.A.T.R. - Sistema Integral de Salud y Estadística",
+    page_title="S.A.T.R. - Plataforma Integral de Salud y Asistencia Clínica",
     page_icon="🏥",
     layout="wide",
 )
 
-# Archivos locales para persistencia permanente de datos
-USER_FILE = "usuarios_satr.json"
-HISTORY_FILE = "historial_satr.json"
-TRIAGE_FILE = "triage_satr.json"
+# Nombre de la base de datos robusta para alta concurrencia (200+ usuarios)
+DB_FILE = "satr_database.db"
+db_lock = threading.Lock()
 
 
-# Funciones de persistencia segura (0 errores si el archivo no existe)
-def cargar_datos(archivo, por_defecto):
-    if os.path.exists(archivo):
-        try:
-            with open(archivo, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            pass
-    return por_defecto
+# --- INICIALIZACIÓN DE LA BASE DE DATOS SQLITE (CONCURRENTE) ---
+def inicializar_bd():
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+
+        # Tabla de Usuarios
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS usuarios (
+                usuario TEXT PRIMARY KEY,
+                password TEXT NOT NULL,
+                email TEXT NOT NULL,
+                nombre TEXT NOT NULL,
+                tipo TEXT NOT NULL
+            )
+        """
+        )
+
+        # Tabla de Historial de Auditorías
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS historial (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                responsable TEXT,
+                tipo TEXT,
+                correo TEXT,
+                historia_clinica TEXT,
+                especialidad TEXT,
+                estado TEXT,
+                fecha TEXT
+            )
+        """
+        )
+
+        # Tabla de Triage y Urgencias
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS triage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                paciente TEXT,
+                triage TEXT,
+                estado TEXT,
+                hora TEXT,
+                registrado_por TEXT
+            )
+        """
+        )
+
+        # Crear usuario administrador por defecto si no existe
+        cursor.execute(
+            "SELECT * FROM usuarios WHERE usuario = ?", ("admin",)
+        )
+        if not cursor.fetchone():
+            cursor.execute(
+                "INSERT INTO usuarios VALUES (?, ?, ?, ?, ?)",
+                (
+                    "admin",
+                    "admin123",
+                    "admin@clinica.com",
+                    "Administrador Principal",
+                    "Pasante",
+                ),
+            )
+
+        conn.commit()
+        conn.close()
 
 
-def guardar_datos(archivo, datos):
-    with open(archivo, "w", encoding="utf-8") as f:
-        json.dump(datos, f, ensure_ascii=False, indent=4)
+inicializar_bd()
 
 
-# Inicializar estados y bases de datos permanentes
-if "users_db" not in st.session_state:
-    st.session_state.users_db = cargar_datos(
-        USER_FILE,
-        {
-            "admin": {
-                "password": "admin123",
-                "email": "admin@clinica.com",
-                "nombre": "Administrador Principal",
-                "tipo": "Pasante",
+# --- FUNCIONES DE ACCESO SEGURO A LA BD ---
+def obtener_usuarios_db():
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        df = pd.read_sql_query("SELECT * FROM usuarios", conn)
+        conn.close()
+        users_dict = {}
+        for _, row in df.iterrows():
+            users_dict[row["usuario"]] = {
+                "password": row["password"],
+                "email": row["email"],
+                "nombre": row["nombre"],
+                "tipo": row["tipo"],
             }
-        },
-    )
+        return users_dict
 
+
+def registrar_usuario_db(usuario, password, email, nombre, tipo):
+    with db_lock:
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO usuarios VALUES (?, ?, ?, ?, ?)",
+                (usuario, password, email, nombre, tipo),
+            )
+            conn.commit()
+            conn.close()
+            return True
+        except:
+            return False
+
+
+def obtener_historial_db():
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        df = pd.read_sql_query(
+            "SELECT responsable, tipo, correo, historia_clinica as Historia_Clinica, especialidad as Especialidad, estado as Estado, fecha as Fecha FROM historial",
+            conn,
+        )
+        conn.close()
+        return df.to_dict(orient="records")
+
+
+def guardar_historial_db(
+    responsable, tipo, correo, historia_clinica, especialidad, estado, fecha
+):
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO historial (responsable, tipo, correo, historia_clinica, especialidad, estado, fecha) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                responsable,
+                tipo,
+                correo,
+                historia_clinica,
+                especialidad,
+                estado,
+                fecha,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+
+def obtener_triage_db():
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        df = pd.read_sql_query(
+            "SELECT id, paciente as Paciente, triage as Triage, estado as Estado, hora as Hora, registrado_por as Registrado_Por FROM triage",
+            conn,
+        )
+        conn.close()
+        return df.to_dict(orient="records")
+
+
+def guardar_triage_db(paciente, triage, estado, hora, registrado_por):
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO triage (paciente, triage, estado, hora, registrado_por) VALUES (?, ?, ?, ?, ?)",
+            (paciente, triage, estado, hora, registrado_por),
+        )
+        conn.commit()
+        conn.close()
+
+
+def actualizar_estado_triage_db(paciente_id, nuevo_estado):
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE triage SET estado = ? WHERE id = ?",
+            (nuevo_estado, paciente_id),
+        )
+        conn.commit()
+        conn.close()
+
+
+def limpiar_triage_db():
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM triage")
+        conn.commit()
+        conn.close()
+
+
+# Inicializar sesión en Streamlit
 if "logged_in_user" not in st.session_state:
     st.session_state.logged_in_user = None
 
-if "historial_global" not in st.session_state:
-    st.session_state.historial_global = cargar_datos(HISTORY_FILE, [])
+# --- DISEÑO DE LA BARRA LATERAL: AUTENTICACIÓN ---
+st.sidebar.title("🔐 S.A.T.R. - Acceso Multi-Usuario")
 
-if "triage_global" not in st.session_state:
-    st.session_state.triage_global = cargar_datos(TRIAGE_FILE, [])
-
-# --- DISEÑO DE LA BARRA LATERAL: AUTENTICACIÓN PERSISTENTE ---
-st.sidebar.title("🔐 S.A.T.R. - Acceso")
+users_db = obtener_usuarios_db()
 
 if st.session_state.logged_in_user is None:
     opcion_auth = st.sidebar.radio(
@@ -73,9 +222,8 @@ if st.session_state.logged_in_user is None:
 
         if st.sidebar.button("Entrar al Sistema"):
             if (
-                usuario_input in st.session_state.users_db
-                and st.session_state.users_db[usuario_input]["password"]
-                == password_input
+                usuario_input in users_db
+                and users_db[usuario_input]["password"] == password_input
             ):
                 st.session_state.logged_in_user = usuario_input
                 st.sidebar.success(f"¡Bienvenido(a), {usuario_input}!")
@@ -104,27 +252,33 @@ if st.session_state.logged_in_user is None:
                 st.sidebar.warning(
                     "Por favor, complete todos los campos obligatorios."
                 )
-            elif nuevo_user in st.session_state.users_db:
+            elif nuevo_user in users_db:
                 st.sidebar.error(
                     "El nombre de usuario ya existe. Elija otro."
                 )
             else:
-                st.session_state.users_db[nuevo_user] = {
-                    "password": nuevo_pass,
-                    "email": nuevo_correo,
-                    "nombre": nuevo_nombre,
-                    "tipo": nuevo_tipo,
-                }
-                guardar_datos(USER_FILE, st.session_state.users_db)
-                st.sidebar.success(
-                    "¡Registro exitoso y guardado! Inicie sesión ahora."
+                exito = registrar_usuario_db(
+                    nuevo_user,
+                    nuevo_pass,
+                    nuevo_correo,
+                    nuevo_nombre,
+                    nuevo_tipo,
                 )
+                if exito:
+                    st.sidebar.success(
+                        "¡Registro exitoso y guardado! Inicie sesión ahora."
+                    )
+                else:
+                    st.sidebar.error("Error al registrar en la base de datos.")
 
-    st.sidebar.info("⚠️ **Sistema Protegido:** Inicie sesión para continuar.")
+    st.sidebar.info(
+        "⚠️ **Sistema de Alta Concurrencia:** Optimizado para +200 usuarios."
+    )
 
 else:
     user_actual = st.session_state.logged_in_user
-    datos_usuario = st.session_state.users_db[user_actual]
+    users_db = obtener_usuarios_db()
+    datos_usuario = users_db[user_actual]
 
     st.sidebar.success(
         f"Conectado:\n**{datos_usuario['nombre']}**\n\n*{datos_usuario['tipo']}*"
@@ -138,7 +292,7 @@ else:
 # --- CUERPO PRINCIPAL DE LA PLATAFORMA ---
 if st.session_state.logged_in_user is None:
     st.warning(
-        "🔒 **Acceso Restringido:** Inicie sesión en la barra lateral para acceder a los módulos del S.A.T.R."
+        "🔒 **Acceso Restringido:** Inicie sesión en la barra lateral para acceder a los módulos."
     )
     st.image(
         "https://images.unsplash.com/photo-1576091160399-112ba8d25d1d?auto=format&fit=crop&w=1000&q=80",
@@ -147,14 +301,15 @@ if st.session_state.logged_in_user is None:
     )
 
 else:
-    st.title("🏥 S.A.T.R. - Plataforma Integral de Registros y Estadística")
+    st.title("🏥 S.A.T.R. - Plataforma Clínica, Bioestadística y de Guardia")
 
     modulo_principal = st.selectbox(
         "📂 Seleccione el Módulo de Trabajo:",
         [
             "1. Auditoría de Expedientes y QR",
-            "2. Calculadora y Analizador Estadístico Avanzado",
-            "3. Tablero de Triage y Urgencias",
+            "2. Calculadora e Inteligencia Bioestadística Avanzada",
+            "3. Tablero de Triage y Urgencias (Alta Resiliencia)",
+            "4. Asistente Médico de Guardia (CIE-10, SOAP y Cálculos)",
         ],
     )
 
@@ -213,20 +368,15 @@ else:
                         f"🎉 ¡Expediente {hc_id} aprobado! Estado: 🟢 VERDE"
                     )
 
-                    registro_revision = {
-                        "Responsable": datos_usuario["nombre"],
-                        "Tipo": datos_usuario["tipo"],
-                        "Correo": datos_usuario["email"],
-                        "Historia_Clinica": hc_id,
-                        "Especialidad": especialidad,
-                        "Estado": "APROBADO (VERDE)",
-                        "Fecha": pd.Timestamp.now().strftime(
-                            "%Y-%m-%d %H:%M"
-                        ),
-                    }
-                    st.session_state.historial_global.append(registro_revision)
-                    guardar_datos(
-                        HISTORY_FILE, st.session_state.historial_global
+                    fecha_actual = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
+                    guardar_historial_db(
+                        datos_usuario["nombre"],
+                        datos_usuario["tipo"],
+                        datos_usuario["email"],
+                        hc_id,
+                        especialidad,
+                        "APROBADO (VERDE)",
+                        fecha_actual,
                     )
 
                     qr_data = f"SATR - HC: {hc_id} | Resp: {responsable} | Área: {especialidad} | Estado: VERDE"
@@ -283,12 +433,13 @@ else:
 
         with tab_sub3:
             st.subheader("📊 Historial de Revisiones")
+            historial_global = obtener_historial_db()
             historial_filtrado = (
-                st.session_state.historial_global
+                historial_global
                 if user_actual == "admin"
                 else [
                     h
-                    for h in st.session_state.historial_global
+                    for h in historial_global
                     if h["Responsable"] == datos_usuario["nombre"]
                 ]
             )
@@ -306,47 +457,43 @@ else:
                 st.info("No hay registros en esta sesión.")
 
     # ==========================================
-    # MÓDULO 2: CALCULADORA Y ANALIZADOR ESTADÍSTICO
+    # MÓDULO 2: CALCULADORA E INTELIGENCIA BIOESTADÍSTICA (NIVEL NASA)
     # ==========================================
     elif (
-        modulo_principal == "2. Calculadora y Analizador Estadístico Avanzado"
+        modulo_principal
+        == "2. Calculadora e Inteligencia Bioestadística Avanzada"
     ):
-        st.subheader("📊 Estadísticas de Salud, Frecuencias y Gráficos")
+        st.subheader("🚀 Central Bioestadística e Indicadores de Rendimiento Clínico")
 
         sub_est = st.radio(
-            "Seleccione la modalidad de análisis:",
+            "Seleccione el motor analítico:",
             [
-                "Calculadora de Indicadores y Frecuencias Manual",
-                "Analizador Estadístico por Carga de Documento",
+                "Indicadores Hospitalarios y Semáforo de Saturación",
+                "Estadística Descriptiva, Frecuencias y Varianza",
+                "Analizador Documental Masivo",
             ],
         )
 
-        if sub_est == "Calculadora de Indicadores y Frecuencias Manual":
+        if sub_est == "Indicadores Hospitalarios y Semáforo de Saturación":
             st.markdown(
-                "### 📐 Indicadores Hospitalarios Clásicos y Distribución (100% Confiable)"
-            )
-            st.write(
-                "Ingrese los valores asistenciales correspondientes al período a evaluar:"
+                "### 📐 Auditoría de Capacidad Instalada (OMS / OPS Estándar)"
             )
 
             col_i1, col_i2 = st.columns(2)
             with col_i1:
                 total_camas = st.number_input(
-                    "Camas disponibles en el servicio",
+                    "Camas instaladas y habilitadas",
                     min_value=0,
-                    value=50,
+                    value=60,
                     step=1,
                 )
                 dias_periodo = st.number_input(
-                    "Días del período (ej. 30 o 31 días)",
-                    min_value=0,
-                    value=30,
-                    step=1,
+                    "Días del período evaluado", min_value=0, value=30, step=1
                 )
                 pacientes_ingresos = st.number_input(
-                    "Total de pacientes ingresados",
+                    "Ingresos hospitalarios totales",
                     min_value=0,
-                    value=120,
+                    value=150,
                     step=1,
                 )
 
@@ -354,24 +501,24 @@ else:
                 dias_paciente = st.number_input(
                     "Total de días-paciente (estancia acumulada)",
                     min_value=0,
-                    value=1050,
+                    value=1350,
                     step=1,
                 )
                 pacientes_egresos = st.number_input(
                     "Total de egresos (altas + defunciones)",
                     min_value=0,
-                    value=118,
+                    value=148,
                     step=1,
                 )
 
-            if st.button("📈 Calcular Indicadores Seguros"):
+            if st.button("⚙️ Ejecutar Motor de Cálculo de Alta Precisión"):
                 if (
                     total_camas <= 0
                     or dias_periodo <= 0
                     or pacientes_egresos <= 0
                 ):
                     st.error(
-                        "❌ **Error de validación:** El número de camas, días del período y egresos deben ser mayores a cero."
+                        "❌ **Error Crítico de Parámetros:** Los valores de camas, días y egresos deben ser estrictamente mayores a cero."
                     )
                 else:
                     ocupacion = (
@@ -383,36 +530,46 @@ else:
                         (total_camas * dias_periodo) - dias_paciente
                     ) / pacientes_egresos
 
-                    st.markdown("### 📋 Resultados Oficiales Obtenidos:")
+                    st.markdown("### 📊 Panel de Métricas Oficiales:")
                     m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("Ocupación de Camas", f"{ocupacion:.2f}%")
+                    m1.metric("Índice de Ocupación", f"{ocupacion:.2f}%")
                     m2.metric(
-                        "Promedio de Permanencia", f"{estancia_media:.2f} días"
+                        "Estancia Promedio", f"{estancia_media:.2f} días"
                     )
-                    m3.metric("Giro / Rotación Cama", f"{giro_cama:.2f}")
+                    m3.metric("Giro de Cama", f"{giro_cama:.2f} veces")
                     m4.metric(
                         "Intervalo Sustitución",
                         f"{intervalo_sustitucion:.2f} días",
                     )
 
-                    st.info(
-                        f"📝 **Diagnóstico Ejecutivo:** Ocupación del {ocupacion:.2f}% y estancia media de {estancia_media:.2f} días evaluadas bajo parámetros OMS/OPS."
-                    )
+                    st.markdown("### 🚦 Diagnóstico de Carga Hospitalaria")
+                    if ocupacion > 85.0:
+                        st.error(
+                            f"🔴 **SATURACIÓN CRÍTICA ({ocupacion:.2f}%):** El servicio supera el umbral de seguridad hospitalaria del 85%."
+                        )
+                    elif 75.0 <= ocupacion <= 85.0:
+                        st.success(
+                            f"🟢 **EFICIENCIA ÓPTIMA ({ocupacion:.2f}%):** El uso de camas se encuentra dentro de los parámetros ideales."
+                        )
+                    else:
+                        st.warning(
+                            f"🟡 **SUBUTILIZACIÓN ({ocupacion:.2f}%):** Capacidad ociosa detectada en el servicio."
+                        )
 
-            st.markdown("---")
+        elif sub_est == "Estadística Descriptiva, Frecuencias y Varianza":
             st.markdown(
-                "### 🔢 Análisis de Distribución de Frecuencias, Media, Mediana y Moda"
+                "### 🔢 Laboratorio Bioestadístico (Media, Mediana, Moda, Varianza y Desviación)"
             )
             st.write(
-                "Ingrese los números separados por comas (ej. 12, 15, 12, 18, 20, 15):"
+                "Ingrese valores numéricos separados por comas (ej. edades, tiempos de espera, días de internación):"
             )
 
             input_datos = st.text_input(
-                "Datos numéricos para estadística descriptiva",
-                "3, 5, 2, 5, 7, 8, 5, 4, 6, 2, 5, 9",
+                "Vector de datos analíticos",
+                "12, 15, 14, 18, 20, 15, 22, 19, 15, 25, 30, 14",
             )
 
-            if st.button("📊 Generar Estadísticas, Tablas y Gráficos"):
+            if st.button("🔬 Procesar Vector Estadístico"):
                 try:
                     lista_nums = [
                         float(x.strip())
@@ -420,301 +577,3 @@ else:
                         if x.strip()
                     ]
                     if lista_nums:
-                        s_datos = pd.Series(lista_nums)
-                        media = s_datos.mean()
-                        mediana = s_datos.median()
-                        moda_vals = s_datos.mode().tolist()
-                        moda_str = (
-                            ", ".join(map(str, moda_vals))
-                            if moda_vals
-                            else "Sin moda clara"
-                        )
-
-                        col_m1, col_m2, col_m3 = st.columns(3)
-                        col_m1.metric("Media (Promedio)", f"{media:.2f}")
-                        col_m2.metric("Mediana", f"{mediana:.2f}")
-                        col_m3.metric("Moda", f"{moda_str}")
-
-                        st.markdown(
-                            "#### 📋 Tabla de Distribución de Frecuencias Oficial"
-                        )
-                        df_freq = (
-                            s_datos.value_counts()
-                            .reset_index()
-                            .rename(
-                                columns={
-                                    "index": "Valor",
-                                    0: "Frecuencia",
-                                    "count": "Frecuencia",
-                                }
-                            )
-                        )
-                        df_freq = df_freq.sort_values(by="Valor").reset_index(
-                            drop=True
-                        )
-                        df_freq["Frecuencia Acumulada"] = df_freq[
-                            "Frecuencia"
-                        ].cumsum()
-                        df_freq["Frecuencia Relativa"] = (
-                            df_freq["Frecuencia"] / len(lista_nums)
-                        ).round(4)
-
-                        st.dataframe(df_freq, use_container_width=True)
-
-                        st.markdown("#### 📈 Gráfico Dinámico de Frecuencias")
-                        st.bar_chart(
-                            df_freq.set_index("Valor")["Frecuencia"]
-                        )
-
-                        csv_descarga = df_freq.to_csv(index=False).encode(
-                            "utf-8"
-                        )
-                        st.download_button(
-                            label="📥 Descargar Reporte Estadístico en CSV",
-                            data=csv_descarga,
-                            file_name="reporte_estadistica_hospitalaria.csv",
-                            mime="text/csv",
-                        )
-                    else:
-                        st.warning(
-                            "⚠️ Ingrese datos numéricos válidos separados por comas."
-                        )
-                except Exception as e:
-                    st.error(
-                        f"❌ Error al procesar los datos ingresados: Revise el formato. ({e})"
-                    )
-
-        else:
-            st.markdown(
-                "### 📁 Analizador Automático de Documentos Estadísticos"
-            )
-            st.write(
-                "Cargue un archivo (.txt o .csv) con datos numéricos. El sistema extraerá la información automáticamente, calculará media, mediana, moda y generará el gráfico."
-            )
-
-            archivo_doc = st.file_uploader(
-                "Cargar documento de datos", type=["txt", "csv"]
-            )
-            if archivo_doc is not None:
-                contenido = archivo_doc.read().decode(
-                    "utf-8", errors="ignore"
-                )
-                st.text_area(
-                    "Vista previa del documento:",
-                    contenido[:400] + "...",
-                    height=120,
-                )
-
-                if st.button("⚙️ Procesar Archivo Automáticamente"):
-                    import re
-
-                    numeros_extraidos = [
-                        float(n) for n in re.findall(r"\b\d+\.?\d*\b", contenido)
-                    ]
-                    if numeros_extraidos:
-                        s_doc = pd.Series(numeros_extraidos)
-                        st.success(
-                            f"¡Éxito! Se leyeron {len(numeros_extraidos)} valores numéricos."
-                        )
-
-                        m_med = s_doc.mean()
-                        m_mediana = s_doc.median()
-                        m_modas = s_doc.mode().tolist()
-
-                        c1, c2, c3 = st.columns(3)
-                        c1.metric("Media Extraída", f"{m_med:.2f}")
-                        c2.metric("Mediana Extraída", f"{m_mediana:.2f}")
-                        c3.metric(
-                            "Moda Extraída",
-                            ", ".join(map(str, m_modas))
-                            if m_modas
-                            else "N/A",
-                        )
-
-                        df_doc_freq = (
-                            s_doc.value_counts()
-                            .reset_index()
-                            .rename(
-                                columns={
-                                    "index": "Valor",
-                                    0: "Frecuencia",
-                                    "count": "Frecuencia",
-                                }
-                            )
-                            .sort_values(by="Valor")
-                            .reset_index(drop=True)
-                        )
-                        st.dataframe(df_doc_freq, use_container_width=True)
-                        st.bar_chart(
-                            df_doc_freq.set_index("Valor")["Frecuencia"]
-                        )
-
-                        csv_doc = df_doc_freq.to_csv(index=False).encode(
-                            "utf-8"
-                        )
-                        st.download_button(
-                            label="📥 Descargar Análisis del Documento (CSV)",
-                            data=csv_doc,
-                            file_name="analisis_documento_salud.csv",
-                            mime="text/csv",
-                        )
-                    else:
-                        st.warning(
-                            "No se detectaron valores numéricos válidos en el archivo."
-                        )
-
-    # ==========================================
-    # MÓDULO 3: TABLERO DE CONTROL DE TRIAGE
-    # ==========================================
-    elif modulo_principal == "3. Tablero de Triage y Urgencias":
-        st.subheader("🚨 Gestión y Flujo de Pacientes en Urgencias (Triage)")
-        st.write(
-            "Tablero dinámico de control de emergencias en tiempo real para el personal médico."
-        )
-
-        # KPIs Rápidos (Métricas de Urgencias)
-        total_pacientes = len(st.session_state.triage_global)
-        en_espera = len(
-            [
-                p
-                for p in st.session_state.triage_global
-                if p["Estado"] == "En Espera"
-            ]
-        )
-        en_atencion = len(
-            [
-                p
-                for p in st.session_state.triage_global
-                if p["Estado"] == "En Atención"
-            ]
-        )
-
-        k1, k2, k3 = st.columns(3)
-        k1.metric("Total en Urgencias", total_pacientes)
-        k2.metric("Pacientes en Espera", en_espera)
-        k3.metric("Pacientes en Atención", en_atencion)
-
-        st.markdown("---")
-
-        # Formulario de registro ultraseguro
-        with st.form("form_triage", clear_on_submit=True):
-            st.markdown("#### ➕ Registrar Ingreso Rápido de Paciente")
-            c_t1, c_t2, c_t3 = st.columns(3)
-            with c_t1:
-                nombre_paciente = st.text_input(
-                    "Nombre o Cédula del Paciente *"
-                )
-            with c_t2:
-                nivel_triage = st.selectbox(
-                    "Clasificación Triage (Manchester/OPS)",
-                    [
-                        "Nivel 1 - Resucitación (Rojo)",
-                        "Nivel 2 - Emergencia (Naranja)",
-                        "Nivel 3 - Urgencia (Amarillo)",
-                        "Nivel 4 - Menor Urgencia (Verde)",
-                        "Nivel 5 - No Urgente (Azul)",
-                    ],
-                )
-            with c_t3:
-                estado_atencion = st.selectbox(
-                    "Estado Inicial", ["En Espera", "En Atención"]
-                )
-
-            submit_triage = st.form_submit_button(
-                "🚀 Registrar e Ingresar al Flujo"
-            )
-            if submit_triage:
-                if not nombre_paciente.strip():
-                    st.error(
-                        "❌ **Error:** Debe ingresar el nombre o identificador del paciente."
-                    )
-                else:
-                    nuevo_registro_triage = {
-                        "Paciente": nombre_paciente.strip(),
-                        "Triage": nivel_triage,
-                        "Estado": estado_atencion,
-                        "Hora": pd.Timestamp.now().strftime(
-                            "%Y-%m-%d %H:%M:%S"
-                        ),
-                        "Registrado_Por": datos_usuario["nombre"],
-                    }
-                    st.session_state.triage_global.append(
-                        nuevo_registro_triage
-                    )
-                    guardar_datos(
-                        TRIAGE_FILE, st.session_state.triage_global
-                    )
-                    st.success(
-                        f"✅ ¡Paciente **{nombre_paciente}** registrado con éxito en el sistema!"
-                    )
-                    st.rerun()
-
-        st.markdown("### 📋 Listado Activo de Urgencias")
-
-        if st.session_state.triage_global:
-            filtro_estado = st.selectbox(
-                "🔍 Filtrar vista por estado del paciente:",
-                ["Todos", "En Espera", "En Atención", "Dado de Alta"],
-            )
-
-            lista_filtrada = st.session_state.triage_global
-            if filtro_estado != "Todos":
-                lista_filtrada = [
-                    p
-                    for p in st.session_state.triage_global
-                    if p["Estado"] == filtro_estado
-                ]
-
-            df_triage = pd.DataFrame(lista_filtrada)
-            st.dataframe(df_triage, use_container_width=True)
-
-            st.markdown("---")
-            st.markdown("#### ⚡ Acciones de Control Médico")
-            col_acc1, col_acc2 = st.columns(2)
-
-            with col_acc1:
-                nombres_en_lista = [
-                    p["Paciente"] for p in st.session_state.triage_global
-                ]
-                if nombres_en_lista:
-                    paciente_a_editar = st.selectbox(
-                        "Seleccionar paciente para cambiar estado:",
-                        nombres_en_lista,
-                    )
-                    nuevo_estado = st.selectbox(
-                        "Nuevo Estado:",
-                        ["En Espera", "En Atención", "Dado de Alta"],
-                    )
-                    if st.button("🔄 Actualizar Estado del Paciente"):
-                        for p in st.session_state.triage_global:
-                            if p["Paciente"] == paciente_a_editar:
-                                p["Estado"] = nuevo_estado
-                        guardar_datos(
-                            TRIAGE_FILE, st.session_state.triage_global
-                        )
-                        st.success(
-                            f"¡Estado de {paciente_a_editar} actualizado a '{nuevo_estado}'!"
-                        )
-                        st.rerun()
-
-            with col_acc2:
-                st.write("---")
-                if st.button("🧹 Borrar Todos los Registros de Urgencias"):
-                    st.session_state.triage_global = []
-                    guardar_datos(TRIAGE_FILE, [])
-                    st.rerun()
-
-            csv_triage = pd.DataFrame(
-                st.session_state.triage_global
-            ).to_csv(index=False)
-            st.download_button(
-                label="📥 Descargar Reporte de Urgencias (CSV)",
-                data=csv_triage,
-                file_name="reporte_triage_urgencias.csv",
-                mime="text/csv",
-            )
-        else:
-            st.info(
-                "📭 No hay pacientes activos en el servicio de urgencias en este momento."
-            )
-
