@@ -9,7 +9,7 @@ import streamlit as st
 
 # Configuración de la página
 st.set_page_config(
-    page_title="S.A.T.R. - Plataforma Integral de Salud, Gestión y Finanzas",
+    page_title="S.A.T.R. - Plataforma Integral de Salud, Admisión y Finanzas",
     page_icon="🏥",
     layout="wide",
 )
@@ -34,6 +34,23 @@ def inicializar_bd():
                 email TEXT NOT NULL,
                 nombre TEXT NOT NULL,
                 tipo TEXT NOT NULL
+            )
+        """
+        )
+
+        # Tabla de Pacientes en Admisión y Seguros
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS admision_pacientes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                paciente TEXT NOT NULL,
+                cedula TEXT,
+                tipo_atencion TEXT NOT NULL,
+                aseguradora TEXT,
+                estado_expediente TEXT NOT NULL,
+                detalles_pendientes TEXT,
+                registrado_por TEXT NOT NULL,
+                fecha_hora TEXT NOT NULL
             )
         """
         )
@@ -68,7 +85,7 @@ def inicializar_bd():
         """
         )
 
-        # Tabla de Citas Médicas y Notificaciones
+        # Tabla de Citas Médicas
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS citas (
@@ -83,7 +100,7 @@ def inicializar_bd():
         """
         )
 
-        # Tabla de Contabilidad y Finanzas
+        # Tabla de Contabilidad y Caja
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS contabilidad (
@@ -91,6 +108,7 @@ def inicializar_bd():
                 fecha TEXT NOT NULL,
                 concepto TEXT NOT NULL,
                 tipo TEXT NOT NULL,
+                metodo_pago TEXT NOT NULL,
                 monto REAL NOT NULL,
                 categoria TEXT NOT NULL,
                 registrado_por TEXT NOT NULL
@@ -98,10 +116,20 @@ def inicializar_bd():
         """
         )
 
-        # Crear usuario administrador por defecto si no existe
+        # Tabla de Insumos de Admisión
         cursor.execute(
-            "SELECT * FROM usuarios WHERE usuario = ?", ("admin",)
+            """
+            CREATE TABLE IF NOT EXISTS insumos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item TEXT UNIQUE NOT NULL,
+                cantidad INTEGER NOT NULL,
+                minimo_requerido INTEGER NOT NULL
+            )
+        """
         )
+
+        # Crear usuario administrador por defecto
+        cursor.execute("SELECT * FROM usuarios WHERE usuario = ?", ("admin",))
         if not cursor.fetchone():
             cursor.execute(
                 "INSERT INTO usuarios VALUES (?, ?, ?, ?, ?)",
@@ -114,6 +142,22 @@ def inicializar_bd():
                 ),
             )
 
+        # Cargar insumos iniciales por defecto si está vacía
+        cursor.execute("SELECT COUNT(*) FROM insumos")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute(
+                "INSERT INTO insumos (item, cantidad, minimo_requerido) VALUES (?, ?, ?)",
+                ("Resmas de Papel Carta/Oficio", 5, 2),
+            )
+            cursor.execute(
+                "INSERT INTO insumos (item, cantidad, minimo_requerido) VALUES (?, ?, ?)",
+                ("Carpetas de Expedientes", 20, 5),
+            )
+            cursor.execute(
+                "INSERT INTO insumos (item, cantidad, minimo_requerido) VALUES (?, ?, ?)",
+                ("Planillas Seguros Miranda", 15, 10),
+            )
+
         conn.commit()
         conn.close()
 
@@ -121,7 +165,7 @@ def inicializar_bd():
 inicializar_bd()
 
 
-# --- FUNCIONES DE ACCESO SEGURO A LA BD ---
+# --- FUNCIONES DE BASE DE DATOS ---
 def obtener_usuarios_db():
     with db_lock:
         conn = sqlite3.connect(DB_FILE)
@@ -152,6 +196,59 @@ def registrar_usuario_db(usuario, password, email, nombre, tipo):
             return True
         except:
             return False
+
+
+def obtener_admision_db():
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        df = pd.read_sql_query(
+            "SELECT id, paciente as Paciente, cedula as Cédula, tipo_atencion as Atención, aseguradora as Aseguradora, estado_expediente as Estado, detalles_pendientes as Pendientes, registrado_por as Registrado_Por, fecha_hora as Fecha_Hora FROM admision_pacientes",
+            conn,
+        )
+        conn.close()
+        return df.to_dict(orient="records")
+
+
+def guardar_admision_db(
+    paciente,
+    cedula,
+    tipo_atencion,
+    aseguradora,
+    estado_expediente,
+    detalles_pendientes,
+    registrado_por,
+    fecha_hora,
+):
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO admision_pacientes (paciente, cedula, tipo_atencion, aseguradora, estado_expediente, detalles_pendientes, registrado_por, fecha_hora) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                paciente,
+                cedula,
+                tipo_atencion,
+                aseguradora,
+                estado_expediente,
+                detalles_pendientes,
+                registrado_por,
+                fecha_hora,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+
+def actualizar_estado_admision_db(adm_id, nuevo_estado, detalles):
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE admision_pacientes SET estado_expediente = ?, detalles_pendientes = ? WHERE id = ?",
+            (nuevo_estado, detalles, adm_id),
+        )
+        conn.commit()
+        conn.close()
 
 
 def obtener_historial_db():
@@ -231,7 +328,6 @@ def limpiar_triage_db():
         conn.close()
 
 
-# --- FUNCIONES DE CITAS Y FINANZAS ---
 def obtener_citas_db():
     with db_lock:
         conn = sqlite3.connect(DB_FILE)
@@ -243,7 +339,9 @@ def obtener_citas_db():
         return df.to_dict(orient="records")
 
 
-def guardar_cita_db(paciente, medico, especialidad, fecha_hora, motivo, estado):
+def guardar_cita_db(
+    paciente, medico, especialidad, fecha_hora, motivo, estado
+):
     with db_lock:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
@@ -271,20 +369,49 @@ def obtener_contabilidad_db():
     with db_lock:
         conn = sqlite3.connect(DB_FILE)
         df = pd.read_sql_query(
-            "SELECT id, fecha as Fecha, concepto as Concepto, tipo as Tipo, monto as Monto, categoria as Categoria, registrado_por as Registrado_Por FROM contabilidad",
+            "SELECT id, fecha as Fecha, concepto as Concepto, tipo as Tipo, metodo_pago as Metodo_Pago, monto as Monto, categoria as Categoria, registrado_por as Registrado_Por FROM contabilidad",
             conn,
         )
         conn.close()
         return df.to_dict(orient="records")
 
 
-def guardar_transaccion_db(fecha, concepto, tipo, monto, categoria, registrado_por):
+def guardar_transaccion_db(
+    fecha, concepto, tipo, metodo_pago, monto, categoria, registrado_por
+):
     with db_lock:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO contabilidad (fecha, concepto, tipo, monto, categoria, registrado_por) VALUES (?, ?, ?, ?, ?, ?)",
-            (fecha, concepto, tipo, monto, categoria, registrado_por),
+            "INSERT INTO contabilidad (fecha, concepto, tipo, metodo_pago, monto, categoria, registrado_por) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                fecha,
+                concepto,
+                tipo,
+                metodo_pago,
+                monto,
+                categoria,
+                registrado_por,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+
+def obtener_insumos_db():
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        df = pd.read_sql_query("SELECT * FROM insumos", conn)
+        conn.close()
+        return df.to_dict(orient="records")
+
+
+def actualizar_insumo_db(item_id, nueva_cant):
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE insumos SET cantidad = ? WHERE id = ?", (nueva_cant, item_id)
         )
         conn.commit()
         conn.close()
@@ -294,8 +421,8 @@ def guardar_transaccion_db(fecha, concepto, tipo, monto, categoria, registrado_p
 if "logged_in_user" not in st.session_state:
     st.session_state.logged_in_user = None
 
-# --- DISEÑO DE LA BARRA LATERAL: AUTENTICACIÓN ---
-st.sidebar.title("🔐 S.A.T.R. - Acceso Multi-Usuario")
+# --- BARRA LATERAL: AUTENTICACIÓN Y NAVEGACIÓN ---
+st.sidebar.title("🔐 S.A.T.R. CLÍNICA")
 
 users_db = obtener_usuarios_db()
 
@@ -338,13 +465,9 @@ if st.session_state.logged_in_user is None:
                 or not nuevo_correo
                 or not nuevo_nombre
             ):
-                st.sidebar.warning(
-                    "Por favor, complete todos los campos obligatorios."
-                )
+                st.sidebar.warning("Complete todos los campos obligatorios.")
             elif nuevo_user in users_db:
-                st.sidebar.error(
-                    "El nombre de usuario ya existe. Elija otro."
-                )
+                st.sidebar.error("El nombre de usuario ya existe.")
             else:
                 exito = registrar_usuario_db(
                     nuevo_user,
@@ -355,13 +478,13 @@ if st.session_state.logged_in_user is None:
                 )
                 if exito:
                     st.sidebar.success(
-                        "¡Registro exitoso y guardado! Inicie sesión ahora."
+                        "¡Registro exitoso! Inicie sesión ahora."
                     )
                 else:
                     st.sidebar.error("Error al registrar en la base de datos.")
 
     st.sidebar.info(
-        "⚠️ **Sistema de Alta Concurrencia:** Optimizado para +200 usuarios."
+        "⚠️ **Sistema de Control de Admisión Hospitalaria:** Diseñado para alta velocidad."
     )
 
 else:
@@ -378,1035 +501,280 @@ else:
         st.session_state.logged_in_user = None
         st.rerun()
 
-# --- CUERPO PRINCIPAL DE LA PLATAFORMA ---
+# --- CUERPO PRINCIPAL ---
 if st.session_state.logged_in_user is None:
     st.warning(
-        "🔒 **Acceso Restringido:** Inicie sesión en la barra lateral para acceder a los módulos."
+        "🔒 **Acceso Restringido:** Inicie sesión en la barra lateral para acceder al sistema."
     )
     st.image(
         "https://images.unsplash.com/photo-1576091160399-112ba8d25d1d?auto=format&fit=crop&w=1000&q=80",
         use_container_width=True,
-        caption="Sistema de Auditoría y Trazabilidad de Registros de Salud (S.A.T.R.)",
+        caption="Sistema de Auditoría, Trazabilidad y Recepción (S.A.T.R. CLÍNICA)",
     )
 
 else:
-    st.title("🏥 S.A.T.R. - Plataforma Clínica, Bioestadística y Gestión Hospitalaria")
+    st.title("🏥 S.A.T.R. CLÍNICA - Central de Admisión y Control General")
 
     modulo_principal = st.selectbox(
         "📂 Seleccione el Módulo de Trabajo:",
         [
-            "1. Auditoría de Expedientes y QR",
-            "2. Calculadora e Inteligencia Bioestadística Avanzada",
-            "3. Tablero de Triage y Urgencias (Alta Resiliencia)",
-            "4. Asistente Médico de Guardia (CIE-10, SOAP y Cálculos)",
-            "5. Notificaciones de Citas Médicas y Agenda",
-            "6. Contabilidad y Balance Financiero Clínico",
+            "1. Control de Admisión, Seguros y Expedientes (Semáforo)",
+            "2. Coordinación Médica, Citas y Avisos de WhatsApp",
+            "3. Contabilidad, Cierre de Caja y Balance Financiero",
+            "4. Auditoría de Expedientes e Historia Clínica (QR)",
+            "5. Central Bioestadística e Indicadores (Nivel OMS)",
+            "6. Tablero de Triage y Urgencias en Tiempo Real",
+            "7. Asistente Médico de Guardia (CIE-10, SOAP y Cálculos)",
+            "8. Almacén e Insumos de Admisión",
         ],
     )
 
     st.markdown("---")
 
     # ==========================================
-    # MÓDULO 1: AUDITORÍA Y EXPEDIENTES
+    # MÓDULO 1: ADMISIÓN, SEGUROS Y EXPEDIENTES (SEMÁFORO)
     # ==========================================
-    if modulo_principal == "1. Auditoría de Expedientes y QR":
-        st.subheader("📋 Módulo de Validación, Análisis y Trazabilidad")
-
-        tab_sub1, tab_sub2, tab_sub3 = st.tabs(
-            [
-                "🚀 Validación y QR",
-                "🤖 Analizador Inteligente",
-                "📊 Mi Historial",
-            ]
-        )
-
-        with tab_sub1:
-            col1, col2 = st.columns(2)
-            with col1:
-                hc_id = st.text_input(
-                    "ID o Código de Historia Clínica",
-                    placeholder="Ej: HC-2026-089",
-                )
-                responsable = st.text_input(
-                    "Responsable / Auditor", value=datos_usuario["nombre"]
-                )
-                especialidad = st.selectbox(
-                    "Área / Servicio",
-                    [
-                        "Registro y Estadística de la Salud",
-                        "Medicina General",
-                        "Pediatría",
-                        "Cardiología",
-                        "Ginecología",
-                        "Cirugía",
-                    ],
-                )
-
-            with col2:
-                st.markdown("**Requisitos Obligatorios:**")
-                firma = st.checkbox("¿Cuenta con firma y sello médico?")
-                consentimiento = st.checkbox(
-                    "¿Tiene el consentimiento informado adjunto?"
-                )
-                cie10 = st.checkbox("¿Tiene la codificación CIE-10 correcta?")
-                lab = st.checkbox("¿Están adjuntos los resultados de laboratorio?")
-
-            if st.button("🚀 Evaluar y Generar QR"):
-                if not hc_id:
-                    st.error("Ingrese el código de la historia clínica.")
-                elif firma and consentimiento and cie10 and lab:
-                    st.success(
-                        f"🎉 ¡Expediente {hc_id} aprobado! Estado: 🟢 VERDE"
-                    )
-
-                    fecha_actual = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
-                    guardar_historial_db(
-                        datos_usuario["nombre"],
-                        datos_usuario["tipo"],
-                        datos_usuario["email"],
-                        hc_id,
-                        especialidad,
-                        "APROBADO (VERDE)",
-                        fecha_actual,
-                    )
-
-                    qr_data = f"SATR - HC: {hc_id} | Resp: {responsable} | Área: {especialidad} | Estado: VERDE"
-                    img = qrcode.make(qr_data)
-                    buffered = BytesIO()
-                    img.save(buffered, format="PNG")
-                    img_str = base64.b64encode(buffered.getvalue()).decode()
-
-                    st.markdown("### 📱 Código QR de Validación Oficial:")
-                    st.markdown(
-                        f'<img src="data:image/png;base64,{img_str}" width="200">',
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.error(
-                        "❌ Expediente incompleto. Estado: 🔴 ROJO / AMARILLO."
-                    )
-
-        with tab_sub2:
-            st.subheader("🤖 Analizador Automático de Expedientes Digitales")
-            archivo_subido = st.file_uploader(
-                "Cargar archivo (.txt o .csv)", type=["txt", "csv"]
-            )
-            if archivo_subido is not None:
-                texto_archivo = archivo_subido.read().decode(
-                    "utf-8", errors="ignore"
-                )
-                st.text_area(
-                    "Vista previa:", texto_archivo[:500] + "...", height=150
-                )
-                if st.button("🔍 Analizar Archivo"):
-                    palabras_clave = [
-                        "firma",
-                        "consentimiento",
-                        "cie-10",
-                        "laboratorio",
-                        "diagnóstico",
-                    ]
-                    encontrados = [
-                        p for p in palabras_clave if p in texto_archivo.lower()
-                    ]
-                    faltantes = [
-                        p
-                        for p in palabras_clave
-                        if p not in texto_archivo.lower()
-                    ]
-                    st.success(
-                        f"✅ Detectados: {', '.join(encontrados) if encontrados else 'Ninguno'}"
-                    )
-                    if faltantes:
-                        st.warning(f"⚠️ Ausentes: {', '.join(faltantes)}")
-                    else:
-                        st.info("🌟 ¡Cumple con todas las menciones clave!")
-
-        with tab_sub3:
-            st.subheader("📊 Historial de Revisiones")
-            historial_global = obtener_historial_db()
-            historial_filtrado = (
-                historial_global
-                if user_actual == "admin"
-                else [
-                    h
-                    for h in historial_global
-                    if h["Responsable"] == datos_usuario["nombre"]
-                ]
-            )
-            if historial_filtrado:
-                df_h = pd.DataFrame(historial_filtrado)
-                st.dataframe(df_h, use_container_width=True)
-                csv = df_h.to_csv(index=False).encode("utf-8")
-                st.download_button(
-                    "📥 Descargar Historial CSV",
-                    csv,
-                    "historial.csv",
-                    "text/csv",
-                )
-            else:
-                st.info("No hay registros en esta sesión.")
-
-    # ==========================================
-    # MÓDULO 2: CALCULADORA E INTELIGENCIA BIOESTADÍSTICA
-    # ==========================================
-    elif (
-        modulo_principal
-        == "2. Calculadora e Inteligencia Bioestadística Avanzada"
-    ):
-        st.subheader("🚀 Central Bioestadística e Indicadores de Rendimiento Clínico")
-
-        sub_est = st.radio(
-            "Seleccione el motor analítico:",
-            [
-                "Indicadores Hospitalarios y Semáforo de Saturación",
-                "Estadística Descriptiva, Frecuencias y Varianza",
-                "Analizador Documental Masivo",
-            ],
-        )
-
-        if sub_est == "Indicadores Hospitalarios y Semáforo de Saturación":
-            st.markdown(
-                "### 📐 Auditoría de Capacidad Instalada (OMS / OPS Estándar)"
-            )
-
-            col_i1, col_i2 = st.columns(2)
-            with col_i1:
-                total_camas = st.number_input(
-                    "Camas instaladas y habilitadas",
-                    min_value=0,
-                    value=60,
-                    step=1,
-                )
-                dias_periodo = st.number_input(
-                    "Días del período evaluado", min_value=0, value=30, step=1
-                )
-                pacientes_ingresos = st.number_input(
-                    "Ingresos hospitalarios totales",
-                    min_value=0,
-                    value=150,
-                    step=1,
-                )
-
-            with col_i2:
-                dias_paciente = st.number_input(
-                    "Total de días-paciente (estancia acumulada)",
-                    min_value=0,
-                    value=1350,
-                    step=1,
-                )
-                pacientes_egresos = st.number_input(
-                    "Total de egresos (altas + defunciones)",
-                    min_value=0,
-                    value=148,
-                    step=1,
-                )
-
-            if st.button("⚙️ Ejecutar Motor de Cálculo de Alta Precisión"):
-                if (
-                    total_camas <= 0
-                    or dias_periodo <= 0
-                    or pacientes_egresos <= 0
-                ):
-                    st.error(
-                        "❌ **Error Crítico de Parámetros:** Los valores de camas, días y egresos deben ser estrictamente mayores a cero."
-                    )
-                else:
-                    ocupacion = (
-                        dias_paciente / (total_camas * dias_periodo)
-                    ) * 100
-                    estancia_media = dias_paciente / pacientes_egresos
-                    giro_cama = pacientes_egresos / total_camas
-                    intervalo_sustitucion = (
-                        (total_camas * dias_periodo) - dias_paciente
-                    ) / pacientes_egresos
-
-                    st.markdown("### 📊 Panel de Métricas Oficiales:")
-                    m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("Índice de Ocupación", f"{ocupacion:.2f}%")
-                    m2.metric(
-                        "Estancia Promedio", f"{estancia_media:.2f} días"
-                    )
-                    m3.metric("Giro de Cama", f"{giro_cama:.2f} veces")
-                    m4.metric(
-                        "Intervalo Sustitución",
-                        f"{intervalo_sustitucion:.2f} días",
-                    )
-
-                    st.markdown("### 🚦 Diagnóstico de Carga Hospitalaria")
-                    if ocupacion > 85.0:
-                        st.error(
-                            f"🔴 **SATURACIÓN CRÍTICA ({ocupacion:.2f}%):** El servicio supera el umbral de seguridad hospitalaria del 85%."
-                        )
-                    elif 75.0 <= ocupacion <= 85.0:
-                        st.success(
-                            f"🟢 **EFICIENCIA ÓPTIMA ({ocupacion:.2f}%):** El uso de camas se encuentra dentro de los parámetros ideales."
-                        )
-                    else:
-                        st.warning(
-                            f"🟡 **SUBUTILIZACIÓN ({ocupacion:.2f}%):** Capacidad ociosa detectada en el servicio."
-                        )
-
-        elif sub_est == "Estadística Descriptiva, Frecuencias y Varianza":
-            st.markdown(
-                "### 🔢 Laboratorio Bioestadístico (Media, Mediana, Moda, Varianza y Desviación)"
-            )
-            st.write(
-                "Ingrese valores numéricos separados por comas (ej. edades, tiempos de espera, días de internación):"
-            )
-
-            input_datos = st.text_input(
-                "Vector de datos analíticos",
-                "12, 15, 14, 18, 20, 15, 22, 19, 15, 25, 30, 14",
-            )
-
-            if st.button("🔬 Procesar Vector Estadístico"):
-                try:
-                    lista_nums = [
-                        float(x.strip())
-                        for x in input_datos.split(",")
-                        if x.strip()
-                    ]
-                    if lista_nums:
-                        s_datos = pd.Series(lista_nums)
-                        media = s_datos.mean()
-                        mediana = s_datos.median()
-                        moda_vals = s_datos.mode().tolist()
-                        moda_str = (
-                            ", ".join(map(str, moda_vals))
-                            if moda_vals
-                            else "Sin moda única"
-                        )
-                        varianza = s_datos.var(ddof=0)
-                        desv_std = s_datos.std(ddof=0)
-                        min_val = s_datos.min()
-                        max_val = s_datos.max()
-                        rango = max_val - min_val
-
-                        c1, c2, c3, c4 = st.columns(4)
-                        c1.metric("Media (μ)", f"{media:.2f}")
-                        c2.metric("Mediana (Me)", f"{mediana:.2f}")
-                        c3.metric("Moda (Mo)", f"{moda_str}")
-                        c4.metric(
-                            "Desviación Estándar (σ)", f"{desv_std:.2f}"
-                        )
-
-                        c5, c6, c7, c8 = st.columns(4)
-                        c5.metric("Varianza (σ²)", f"{varianza:.2f}")
-                        c6.metric("Valor Mínimo", f"{min_val}")
-                        c7.metric("Valor Máximo", f"{max_val}")
-                        c8.metric("Rango", f"{rango}")
-
-                        st.markdown(
-                            "#### 📋 Tabla Analítica de Distribución de Frecuencias"
-                        )
-                        df_freq = (
-                            s_datos.value_counts()
-                            .reset_index()
-                            .rename(
-                                columns={
-                                    "index": "Valor",
-                                    0: "Frecuencia",
-                                    "count": "Frecuencia",
-                                }
-                            )
-                        )
-                        df_freq = df_freq.sort_values(by="Valor").reset_index(
-                            drop=True
-                        )
-                        df_freq["Frecuencia Acumulada"] = df_freq[
-                            "Frecuencia"
-                        ].cumsum()
-                        df_freq["Frecuencia Relativa"] = (
-                            df_freq["Frecuencia"] / len(lista_nums)
-                        ).round(4)
-                        df_freq["Porcentaje (%)"] = (
-                            df_freq["Frecuencia Relativa"] * 100
-                        ).round(2)
-
-                        st.dataframe(df_freq, use_container_width=True)
-
-                        st.markdown(
-                            "#### 📈 Histograma de Distribución Frecuencial"
-                        )
-                        st.bar_chart(
-                            df_freq.set_index("Valor")["Frecuencia"]
-                        )
-
-                        csv_descarga = df_freq.to_csv(index=False).encode(
-                            "utf-8"
-                        )
-                        st.download_button(
-                            label="📥 Descargar Reporte Bioestadístico (CSV)",
-                            data=csv_descarga,
-                            file_name="reporte_bioestadistica_satr.csv",
-                            mime="text/csv",
-                        )
-                    else:
-                        st.warning("⚠️ Ingrese datos numéricos válidos.")
-                except Exception as e:
-                    st.error(f"❌ Error en el procesamiento del vector: {e}")
-
-        else:
-            st.markdown(
-                "### 📁 Analizador Masivo de Documentos Estadísticos"
-            )
-            st.write(
-                "Cargue expedientes en formato plano (.txt o .csv). El motor extraerá todos los valores numéricos para su analítica."
-            )
-
-            archivo_doc = st.file_uploader(
-                "Cargar archivo de datos clínicos", type=["txt", "csv"]
-            )
-            if archivo_doc is not None:
-                contenido = archivo_doc.read().decode(
-                    "utf-8", errors="ignore"
-                )
-                st.text_area(
-                    "Vista previa del documento:",
-                    contenido[:500] + "...",
-                    height=130,
-                )
-
-                if st.button("⚙️ Ejecutar Extracción y Análisis Masivo"):
-                    import re
-
-                    numeros_extraidos = [
-                        float(n) for n in re.findall(r"\b\d+\.?\d*\b", contenido)
-                    ]
-                    if numeros_extraidos:
-                        s_doc = pd.Series(numeros_extraidos)
-                        st.success(
-                            f"¡Extracción exitosa! {len(numeros_extraidos)} registros numéricos procesados."
-                        )
-
-                        m_med = s_doc.mean()
-                        m_mediana = s_doc.median()
-                        m_std = s_doc.std(ddof=0)
-
-                        c1, c2, c3 = st.columns(3)
-                        c1.metric("Media Extraída", f"{m_med:.2f}")
-                        c2.metric("Mediana Extraída", f"{m_mediana:.2f}")
-                        c3.metric("Desviación (σ)", f"{m_std:.2f}")
-
-                        df_doc_freq = (
-                            s_doc.value_counts()
-                            .reset_index()
-                            .rename(
-                                columns={
-                                    "index": "Valor",
-                                    0: "Frecuencia",
-                                    "count": "Frecuencia",
-                                }
-                            )
-                            .sort_values(by="Valor")
-                            .reset_index(drop=True)
-                        )
-                        st.dataframe(df_doc_freq, use_container_width=True)
-                        st.bar_chart(
-                            df_doc_freq.set_index("Valor")["Frecuencia"]
-                        )
-
-                        csv_doc = df_doc_freq.to_csv(index=False).encode(
-                            "utf-8"
-                        )
-                        st.download_button(
-                            label="📥 Descargar Analítica Documental (CSV)",
-                            data=csv_doc,
-                            file_name="analisis_documental_satr.csv",
-                            mime="text/csv",
-                        )
-                    else:
-                        st.warning(
-                            "No se identificaron patrones numéricos válidos en el archivo cargado."
-                        )
-
-    # ==========================================
-    # MÓDULO 3: TABLERO DE TRIAGE Y URGENCIAS
-    # ==========================================
-    elif (
-        modulo_principal
-        == "3. Tablero de Triage y Urgencias (Alta Resiliencia)"
-    ):
-        st.subheader(
-            "🚨 Centro de Control Operativo de Urgencias y Triage en Tiempo Real"
-        )
+    if modulo_principal == "1. Control de Admisión, Seguros y Expedientes (Semáforo)":
+        st.subheader("🗂️ Gestor de Admisión, Verificación de Seguros y Documentación")
         st.write(
-            "Monitoreo crítico de flujos, tiempos de espera y priorización clínica."
+            "Evita el extravío de papeles, controla las planillas obligatorias de Seguros Miranda y previene la salida de pacientes sin factura."
         )
 
-        triage_global = obtener_triage_db()
+        admisiones = obtener_admision_db()
 
-        total_pacientes = len(triage_global)
-        en_espera = len(
-            [p for p in triage_global if p["Estado"] == "En Espera"]
-        )
-        en_atencion = len(
-            [p for p in triage_global if p["Estado"] == "En Atención"]
-        )
-        criticos = len(
-            [
-                p
-                for p in triage_global
-                if "Nivel 1" in p["Triage"] or "Nivel 2" in p["Triage"]
-            ]
-        )
+        # Métricas de estado
+        tot_adm = len(admisiones)
+        rojos = len([a for a in admisiones if "🔴" in a["Estado"]])
+        amarillos = len([a for a in admisiones if "🟡" in a["Estado"]])
+        verdes = len([a for a in admisiones if "🟢" in a["Estado"]])
 
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Censo de Urgencias", total_pacientes)
-        k2.metric("Pacientes en Espera", en_espera)
-        k3.metric("En Atención Médica", en_atencion)
-        k4.metric("Casos Críticos (N1/N2)", criticos)
+        a1, a2, a3, a4 = st.columns(4)
+        a1.metric("Pacientes en Admisión", tot_adm)
+        a2.metric("🔴 Documento Faltante", rojos)
+        a3.metric("🟡 En Atención / Consulta", amarillos)
+        a4.metric("🟢 Listo para Egreso", verdes)
 
         st.markdown("---")
 
-        with st.form("form_triage", clear_on_submit=True):
-            st.markdown("#### ➕ Admisión Inmediata a Urgencias / Triage")
-            c_t1, c_t2, c_t3 = st.columns(3)
-            with c_t1:
-                nombre_paciente = st.text_input(
-                    "Nombre o Cédula del Paciente *"
-                )
-            with c_t2:
-                nivel_triage = st.selectbox(
-                    "Escala de Triage (Manchester / OPS)",
-                    [
-                        "Nivel 1 - Resucitación (Rojo)",
-                        "Nivel 2 - Emergencia (Naranja)",
-                        "Nivel 3 - Urgencia (Amarillo)",
-                        "Nivel 4 - Menor Urgencia (Verde)",
-                        "Nivel 5 - No Urgente (Azul)",
-                    ],
-                )
-            with c_t3:
-                estado_atencion = st.selectbox(
-                    "Estado Inicial", ["En Espera", "En Atención"]
-                )
-
-            submit_triage = st.form_submit_button(
-                "🚀 Registrar Ingreso a Urgencias"
-            )
-            if submit_triage:
-                if not nombre_paciente.strip():
-                    st.error(
-                        "❌ **Error:** Debe ingresar el identificador del paciente."
-                    )
-                else:
-                    hora_actual = pd.Timestamp.now().strftime(
-                        "%Y-%m-%d %H:%M:%S"
-                    )
-                    guardar_triage_db(
-                        nombre_paciente.strip(),
-                        nivel_triage,
-                        estado_atencion,
-                        hora_actual,
-                        datos_usuario["nombre"],
-                    )
-                    st.success(
-                        f"✅ ¡Paciente **{nombre_paciente}** admitido exitosamente!"
-                    )
-                    st.rerun()
-
-        st.markdown("### 📋 Tablero Activo de Control de Flujo")
-
-        triage_global = obtener_triage_db()
-        if triage_global:
-            col_f1, col_f2 = st.columns(2)
-            with col_f1:
-                filtro_estado = st.selectbox(
-                    "Filtrar por Estado:",
-                    ["Todos", "En Espera", "En Atención", "Dado de Alta"],
-                )
-            with col_f2:
-                filtro_nivel = st.selectbox(
-                    "Filtrar por Triage:",
-                    [
-                        "Todos",
-                        "Nivel 1 - Resucitación (Rojo)",
-                        "Nivel 2 - Emergencia (Naranja)",
-                        "Nivel 3 - Urgencia (Amarillo)",
-                        "Nivel 4 - Menor Urgencia (Verde)",
-                        "Nivel 5 - No Urgente (Azul)",
-                    ],
-                )
-
-            lista_filtrada = triage_global
-            if filtro_estado != "Todos":
-                lista_filtrada = [
-                    p for p in lista_filtrada if p["Estado"] == filtro_estado
-                ]
-            if filtro_nivel != "Todos":
-                lista_filtrada = [
-                    p for p in lista_filtrada if p["Triage"] == filtro_nivel
-                ]
-
-            if lista_filtrada:
-                df_triage = pd.DataFrame(lista_filtrada)
-                st.dataframe(
-                    df_triage.drop(columns=["id"], errors="ignore"),
-                    use_container_width=True,
-                )
-            else:
-                st.info(
-                    "No hay pacientes que coincidan con los filtros seleccionados."
-                )
-
-            st.markdown("---")
-            st.markdown("#### ⚡ Acciones de Gestión de Guardia")
-            col_acc1, col_acc2 = st.columns(2)
-
-            with col_acc1:
-                opciones_pacientes = {
-                    f"{p['Paciente']} (Ingreso: {p['Hora']})": p["id"]
-                    for p in triage_global
-                }
-                if opciones_pacientes:
-                    paciente_seleccionado_label = st.selectbox(
-                        "Seleccionar paciente para actualizar estado:",
-                        list(opciones_pacientes.keys()),
-                    )
-                    paciente_id_activo = opciones_pacientes[
-                        paciente_seleccionado_label
-                    ]
-
-                    nuevo_estado = st.selectbox(
-                        "Asignar Nuevo Estado:",
-                        ["En Espera", "En Atención", "Dado de Alta"],
-                    )
-                    if st.button("🔄 Actualizar Estado Clínico"):
-                        actualizar_estado_triage_db(
-                            paciente_id_activo, nuevo_estado
-                        )
-                        st.success("¡Estado del paciente actualizado con éxito!")
-                        st.rerun()
-
-            with col_acc2:
-                st.write("---")
-                if st.button("🧹 Vaciar Registro de Urgencias (Reiniciar Turno)"):
-                    limpiar_triage_db()
-                    st.success("El tablero de urgencias ha sido reiniciado.")
-                    st.rerun()
-
-            csv_triage = pd.DataFrame(triage_global).to_csv(index=False)
-            st.download_button(
-                label="📥 Descargar Reporte Completo de Urgencias (CSV)",
-                data=csv_triage,
-                file_name="reporte_urgencias_triage.csv",
-                mime="text/csv",
-            )
-        else:
-            st.info(
-                "📭 Servicio de urgencias despejado. No hay pacientes activos registrados."
-            )
-
-    # ==========================================
-    # MÓDULO 4: ASISTENTE MÉDICO DE GUARDIA
-    # ==========================================
-    elif (
-        modulo_principal
-        == "4. Asistente Médico de Guardia (CIE-10, SOAP y Cálculos)"
-    ):
-        st.subheader("🩺 Asistente Clínico para el Día a Día en Guardia")
-        st.write(
-            "Herramientas de consulta rápida y redacción médica para el personal asistencial."
+        tab_adm1, tab_adm2 = st.tabs(
+            ["📋 Tablero de Control de Admisión", "➕ Registrar Ingreso de Paciente"]
         )
 
-        sub_guardia = st.selectbox(
-            "Seleccione la utilidad médica:",
-            [
-                "📖 Buscador Rápido de Códigos CIE-10",
-                "📝 Generador de Nota de Evolución SOAP",
-                "🧮 Calculadoras Clínicas de Emergencia (IMC & Goteo)",
-            ],
-        )
+        with tab_adm1:
+            if admisiones:
+                df_adm = pd.DataFrame(admisiones)
 
-        if sub_guardia == "📖 Buscador Rápido de Códigos CIE-10":
-            st.markdown("### 🔍 Consulta Rápida del Manual CIE-10")
-            st.write(
-                "Busque patologías frecuentes para obtener su codificación oficial de forma inmediata:"
-            )
-
-            base_cie10 = [
-                {
-                    "Código": "J02.9",
-                    "Diagnóstico": "Faringitis aguda, no especificada",
-                    "Capítulo": "Enfermedades respiratorias",
-                },
-                {
-                    "Código": "J18.9",
-                    "Diagnóstico": "Neumonía, no especificada",
-                    "Capítulo": "Enfermedades respiratorias",
-                },
-                {
-                    "Código": "K35.9",
-                    "Diagnóstico": (
-                        "Apendicitis aguda, sin otra especificación"
-                    ),
-                    "Capítulo": "Enfermedades digestivas",
-                },
-                {
-                    "Código": "K30",
-                    "Diagnóstico": "Dispepsia (Indigestión)",
-                    "Capítulo": "Enfermedades digestivas",
-                },
-                {
-                    "Código": "I10",
-                    "Diagnóstico": "Hipertensión esencial (primaria)",
-                    "Capítulo": "Enfermedades del sistema circulatorio",
-                },
-                {
-                    "Código": "E11.9",
-                    "Diagnóstico": (
-                        "Diabetes mellitus tipo 2 sin complicaciones"
-                    ),
-                    "Capítulo": "Enfermedades endocrinas y metabólicas",
-                },
-                {
-                    "Código": "A09",
-                    "Diagnóstico": (
-                        "Diarrea y gastroenteritis de presunto origen infeccioso"
-                    ),
-                    "Capítulo": "Enfermedades infecciosas",
-                },
-                {
-                    "Código": "A90",
-                    "Diagnóstico": "Fiebre del dengue [dengue clásico]",
-                    "Capítulo": "Enfermedades infecciosas",
-                },
-                {
-                    "Código": "S93.4",
-                    "Diagnóstico": "Esguinces y torceduras del tobillo",
-                    "Capítulo": "Traumatismos y lesiones",
-                },
-                {
-                    "Código": "R51",
-                    "Diagnóstico": "Cefalea (Dolor de cabeza)",
-                    "Capítulo": "Síntomas y signos generales",
-                },
-                {
-                    "Código": "R10.4",
-                    "Diagnóstico": "Dolor abdominal no especificado",
-                    "Capítulo": "Síntomas y signos generales",
-                },
-                {
-                    "Código": "N39.0",
-                    "Diagnóstico": (
-                        "Infección de vías urinarias, sitio no especificado"
-                    ),
-                    "Capítulo": "Enfermedades genitourinarias",
-                },
-            ]
-
-            df_cie = pd.DataFrame(base_cie10)
-            busqueda = st.text_input(
-                "🔎 Escriba el síntoma o diagnóstico a buscar:",
-                placeholder="Ej: dengue, dolor, neumonía, diabetes...",
-            )
-
-            if busqueda:
-                resultado_busqueda = df_cie[
-                    df_cie["Diagnóstico"]
-                    .str.lower()
-                    .str.contains(busqueda.lower())
-                    | df_cie["Código"]
-                    .str.lower()
-                    .str.contains(busqueda.lower())
-                ]
-                if not resultado_busqueda.empty:
-                    st.success(
-                        f"Se encontraron {len(resultado_busqueda)} coincidencias:"
-                    )
-                    st.dataframe(
-                        resultado_busqueda, use_container_width=True
-                    )
-                else:
-                    st.warning(
-                        "No se encontró ese término en la base rápida. Verifique la ortografía."
-                    )
-            else:
-                st.markdown("#### Listado Frecuente en Guardia:")
-                st.dataframe(df_cie, use_container_width=True)
-
-        elif sub_guardia == "📝 Generador de Nota de Evolución SOAP":
-            st.markdown(
-                "### 📝 Redactor Automatizado de Notas Clínicas (Formato SOAP)"
-            )
-            st.write(
-                "Complete los datos del paciente para estructurar una nota médica profesional lista para el expediente:"
-            )
-
-            col_s1, col_s2 = st.columns(2)
-            with col_s1:
-                p_nombre = st.text_input("Nombre y Apellido del Paciente")
-                p_edad = st.text_input("Edad / Sexo")
-            with col_s2:
-                p_fecha = st.text_input(
-                    "Fecha y Hora",
-                    value=pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
+                filtro_est_adm = st.selectbox(
+                    "Filtrar por Estado de Expediente:",
+                    ["Todos", "🔴 Pendiente Documento/Firma", "🟡 En Atención (RX/Lab/Consulta)", "🟢 Listo (Factura + Récipes + Planilla)"],
                 )
-                p_medico = st.text_input(
-                    "Médico Tratante / Residente",
-                    value=datos_usuario["nombre"],
-                )
-
-            st.markdown("---")
-            subjetivo = st.text_area(
-                "**S (Subjetivo):** Motivo de consulta y síntomas referidos por el paciente."
-            )
-            objetivo = st.text_area(
-                "**O (Objetivo):** Signos vitales, examen físico y hallazgos clínicos."
-            )
-            analisis = st.text_area(
-                "**A (Análisis / Diagnóstico):** Impresión diagnóstica y evolución clínica."
-            )
-            plan = st.text_area(
-                "**P (Plan):** Tratamiento indicado, exámenes paraclínicos y recomendaciones."
-            )
-
-            if st.button("📄 Generar Nota Clínica Estructurada"):
-                if not p_nombre or not subjetivo:
-                    st.error(
-                        "Por favor, complete al menos el nombre del paciente y la sección Subjetiva."
-                    )
-                else:
-                    nota_formateada = f"""
-==================================================
-              NOTA DE EVOLUCIÓN CLÍNICA (SOAP)
-==================================================
-Paciente: {p_nombre} | Edad/Sexo: {p_edad}
-Fecha/Hora: {p_fecha}
-Responsable: {p_medico} ({datos_usuario['tipo']})
---------------------------------------------------
-[S] SUBJETIVO:
-{subjetivo}
-
-[O] OBJETIVO:
-{objetivo}
-
-[A] ANÁLISIS / DIAGNÓSTICO:
-{analisis}
-
-[P] PLAN Y TRATAMIENTO:
-{plan}
-==================================================
-"""
-                    st.markdown("### 📋 Vista Previa del Documento Médico:")
-                    st.code(nota_formateada, language="text")
-
-                    st.download_button(
-                        label="📥 Descargar Nota Médica en TXT",
-                        data=nota_formateada.encode("utf-8"),
-                        file_name=f"Nota_Clinica_{p_nombre.replace(' ', '_')}.txt",
-                        mime="text/plain",
-                    )
-
-        elif (
-            sub_guardia
-            == "🧮 Calculadoras Clínicas de Emergencia (IMC & Goteo)"
-        ):
-            st.markdown(
-                "### 🧮 Calculadoras Auxiliares de Urgencias y Consulta"
-            )
-
-            calc_tab = st.radio(
-                "Seleccione la calculadora:",
-                [
-                    "Índice de Masa Corporal (IMC)",
-                    "Velocidad de Infusión (Goteo de Soluciones)",
-                ],
-            )
-
-            if calc_tab == "Índice de Masa Corporal (IMC)":
-                st.markdown("#### Cálculo de Antropometría y Estado Nutricional")
-                c_imc1, c_imc2 = st.columns(2)
-                with c_imc1:
-                    peso_kg = st.number_input(
-                        "Peso del paciente (kg)",
-                        min_value=1.0,
-                        value=70.0,
-                        step=0.5,
-                    )
-                with c_imc2:
-                    talla_m = st.number_input(
-                        "Talla / Estatura (metros, ej. 1.75)",
-                        min_value=0.5,
-                        value=1.70,
-                        step=0.01,
-                    )
-
-                if st.button("⚖️ Calcular IMC"):
-                    if talla_m > 0:
-                        imc = peso_kg / (talla_m**2)
-                        st.metric("Índice de Masa Corporal (IMC)", f"{imc:.2f}")
-
-                        if imc < 18.5:
-                            st.warning(
-                                "⚠️ Clasificación: **Bajo peso** (Delgadez)"
-                            )
-                        elif 18.5 <= imc < 25.0:
-                            st.success(
-                                "✅ Clasificación: **Peso normal** (Eutrófico)"
-                            )
-                        elif 25.0 <= imc < 30.0:
-                            st.warning("⚠️ Clasificación: **Sobrepeso**")
-                        else:
-                            st.error(
-                                "🔴 Clasificación: **Obesidad** (Riesgo metabólico elevado)"
-                            )
-                    else:
-                        st.error("La talla debe ser mayor a cero.")
-
-            else:
-                st.markdown(
-                    "#### Cálculo de Velocidad de Infusión (Gotas por Minuto)"
-                )
-                st.write(
-                    "Calcula el goteo para sueros y soluciones intravenosas según el volumen y el tiempo."
-                )
-
-                c_g1, c_g2 = st.columns(2)
-                with c_g1:
-                    volumen_ml = st.number_input(
-                        "Volumen total a infundir (ml)",
-                        min_value=10.0,
-                        value=500.0,
-                        step=50.0,
-                    )
-                    horas = st.number_input(
-                        "Tiempo en horas",
-                        min_value=0.5,
-                        value=8.0,
-                        step=0.5,
-                    )
-                with c_g2:
-                    factor_goteo = st.selectbox(
-                        "Equipo de Infusión",
-                        [
-                            "Macrogotero (20 gotas/ml - Adultos)",
-                            "Microgotero (60 microgotas/ml - Pediátrico)",
-                        ],
-                    )
-
-                if st.button("💧 Calcular Goteo"):
-                    if horas > 0:
-                        factor = (
-                            20
-                            if "Macrogotero" in factor_goteo
-                            else 60
-                        )
-                        goteo_minuto = (volumen_ml * factor) / (horas * 60)
-
-                        st.metric(
-                            "Velocidad de Infusión Requerida",
-                            f"{goteo_minuto:.1f} gotas/min",
-                        )
-                        st.info(
-                            f"💡 **Indicación práctica:** Administrar {round(goteo_minuto)} gotas por minuto para pasar {volumen_ml} ml en {horas} horas."
-                        )
-                    else:
-                        st.error("El tiempo en horas debe ser mayor a cero.")
-
-    # ==========================================
-    # MÓDULO 5: NOTIFICACIONES DE CITAS (NUEVO)
-    # ==========================================
-    elif modulo_principal == "5. Notificaciones de Citas Médicas y Agenda":
-        st.subheader("📅 Notificaciones y Control de Citas Médicas")
-        st.write(
-            "Monitoreo en tiempo real de citas pendientes, confirmadas y cancelaciones de pacientes."
-        )
-
-        citas_globales = obtener_citas_db()
-
-        # Métricas rápidas de agenda
-        total_citas = len(citas_globales)
-        citas_pendientes = len(
-            [c for c in citas_globales if c["Estado"] == "Pendiente"]
-        )
-        citas_canceladas = len(
-            [c for c in citas_globales if c["Estado"] == "Cancelada"]
-        )
-        citas_atendidas = len(
-            [c for c in citas_globales if c["Estado"] == "Atendida"]
-        )
-
-        m_c1, m_c2, m_c3, m_c4 = st.columns(4)
-        m_c1.metric("Citas Agendadas", total_citas)
-        m_c2.metric("⏳ Pendientes", citas_pendientes)
-        m_c3.metric("❌ Canceladas", citas_canceladas)
-        m_c4.metric("✅ Atendidas", citas_atendidas)
-
-        st.markdown("---")
-
-        # Alertas destacadas de notificación
-        if citas_canceladas > 0:
-            st.error(
-                f"🚨 **Alerta de Agenda:** Hay **{citas_canceladas} cita(s) cancelada(s)** recientemente. Verifique el listado para reorganizar turnos."
-            )
-        if citas_pendientes > 0:
-            st.info(
-                f"🔔 **Notificación:** Tiene **{citas_pendientes} cita(s) pendiente(s)** por atender."
-            )
-
-        tab_cita1, tab_cita2 = st.tabs(
-            ["📋 Listado y Notificaciones de Citas", "➕ Agendar Nueva Cita"]
-        )
-
-        with tab_cita1:
-            if citas_globales:
-                df_citas = pd.DataFrame(citas_globales)
-
-                filtro_c = st.selectbox(
-                    "Filtrar citas por estado:",
-                    ["Todas", "Pendiente", "Cancelada", "Atendida"],
-                )
-                if filtro_c != "Todas":
-                    df_citas = df_citas[df_citas["Estado"] == filtro_c]
+                if filtro_est_adm != "Todos":
+                    df_adm = df_adm[df_adm["Estado"] == filtro_est_adm]
 
                 st.dataframe(
-                    df_citas.drop(columns=["id"], errors="ignore"),
+                    df_adm.drop(columns=["id"], errors="ignore"),
                     use_container_width=True,
                 )
 
                 st.markdown("---")
-                st.markdown("#### 🔄 Cambiar Estado de una Cita")
-                col_cit1, col_cit2 = st.columns(2)
+                st.markdown("#### 🔄 Cambiar Estado del Expediente del Paciente")
+                col_u1, col_u2 = st.columns(2)
 
-                with col_cit1:
-                    dict_citas = {
-                        f"{c['Paciente']} - {c['Fecha_Hora']} ({c['Estado']})": c[
-                            "id"
-                        ]
-                        for c in citas_globales
+                with col_u1:
+                    dict_adm = {
+                        f"{a['Paciente']} ({a['Atención']} - {a['Estado']})": a["id"]
+                        for a in admisiones
                     }
-                    cita_sel = st.selectbox(
-                        "Seleccionar cita a actualizar:",
-                        list(dict_citas.keys()),
+                    pac_sel = st.selectbox(
+                        "Seleccionar paciente a actualizar:", list(dict_adm.keys())
                     )
-                    id_cita_sel = dict_citas[cita_sel]
+                    id_pac_sel = dict_adm[pac_sel]
 
-                with col_cit2:
-                    nuevo_est_cita = st.selectbox(
-                        "Nuevo Estado de Cita:",
-                        ["Pendiente", "Atendida", "Cancelada"],
+                with col_u2:
+                    nuevo_est_adm = st.selectbox(
+                        "Nuevo Estado:",
+                        [
+                            "🔴 Pendiente Documento/Firma",
+                            "🟡 En Atención (RX/Lab/Consulta)",
+                            "🟢 Listo (Factura + Récipes + Planilla)",
+                        ],
                     )
-                    if st.button("🔄 Actualizar Estado de Cita"):
-                        actualizar_estado_cita_db(
-                            id_cita_sel, nuevo_est_cita
+                    nuevos_detalles = st.text_input(
+                        "Detalles / Observaciones",
+                        placeholder="Ej: Entregó la planilla de Seguros Miranda firmada.",
+                    )
+
+                    if st.button("🔄 Actualizar Estado de Admisión"):
+                        actualizar_estado_admision_db(
+                            id_pac_sel, nuevo_est_adm, nuevos_detalles
                         )
-                        st.success("¡Estado de la cita actualizado con éxito!")
+                        st.success("¡Expediente actualizado con éxito!")
                         st.rerun()
             else:
-                st.info("No hay citas registradas en el sistema actualmente.")
+                st.info("No hay pacientes registrados en admisión hoy.")
 
-        with tab_cita2:
-            st.markdown("#### Agendar Cita de Paciente")
-            with st.form("form_nueva_cita", clear_on_submit=True):
-                c_nom = st.text_input("Nombre Completo del Paciente *")
-                c_med = st.text_input(
-                    "Médico Asignado", value=datos_usuario["nombre"]
+        with tab_adm2:
+            st.markdown("#### Registrar Entrada de Paciente a Taquilla")
+            with st.form("form_admision", clear_on_submit=True):
+                ca1, ca2 = st.columns(2)
+                with ca1:
+                    ad_nombre = st.text_input("Nombre y Apellido del Paciente *")
+                    ad_cedula = st.text_input("Cédula o Identificación")
+                    ad_tipo = st.selectbox(
+                        "Modalidad de Atención *",
+                        ["Particular", "Seguros Miranda", "Caseha / Crédito", "Seguro General (Otro)"],
+                    )
+                with ca2:
+                    ad_aseguradora = st.text_input(
+                        "Nombre de la Aseguradora / Empresa",
+                        placeholder="Solo si no es Particular",
+                    )
+                    ad_estado_ini = st.selectbox(
+                        "Estado Inicial del Expediente",
+                        [
+                            "🔴 Pendiente Documento/Firma",
+                            "🟡 En Atención (RX/Lab/Consulta)",
+                            "🟢 Listo (Factura + Récipes + Planilla)",
+                        ],
+                    )
+                    ad_obs = st.text_area(
+                        "Pendientes / Documentos requeridos",
+                        placeholder="Ej. Entregar planilla Miranda para firma, falta copia de cédula...",
+                    )
+
+                btn_adm = st.form_submit_button("🚀 Iniciar Admisión")
+                if btn_adm:
+                    if not ad_nombre.strip():
+                        st.error("Ingrese el nombre del paciente.")
+                    else:
+                        # Alerta automatizada para Seguros Miranda
+                        if ad_tipo == "Seguros Miranda":
+                            st.warning(
+                                "📌 **REQUISITO OBLIGATORIO:** Imprimir e incluir la Planilla Especial de Seguros Miranda para firma del paciente."
+                            )
+
+                        f_actual = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
+                        guardar_admision_db(
+                            ad_nombre.strip(),
+                            ad_cedula,
+                            ad_tipo,
+                            ad_aseguradora,
+                            ad_estado_ini,
+                            ad_obs,
+                            datos_usuario["nombre"],
+                            f_actual,
+                        )
+                        st.success(f"¡Paciente {ad_nombre} registrado en admisión!")
+                        st.rerun()
+
+    # ==========================================
+    # MÓDULO 2: COORDINACIÓN MÉDICA, CITAS Y WHATSAPP
+    # ==========================================
+    elif modulo_principal == "2. Coordinación Médica, Citas y Avisos de WhatsApp":
+        st.subheader("📅 Coordinación de Agendas Médicas y Notificaciones por WhatsApp")
+        st.write(
+            "Avisa a los doctores si tienen pacientes, gestiona cancelaciones al instante y envía resúmenes de agenda por WhatsApp."
+        )
+
+        citas_globales = obtener_citas_db()
+
+        tot_c = len(citas_globales)
+        pend_c = len([c for c in citas_globales if c["Estado"] == "Pendiente"])
+        canc_c = len([c for c in citas_globales if c["Estado"] == "Cancelada"])
+        atend_c = len([c for c in citas_globales if c["Estado"] == "Atendida"])
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Citas Agendadas", tot_c)
+        m2.metric("⏳ Pendientes", pend_c)
+        m3.metric("🚨 Canceladas", canc_c)
+        m4.metric("✅ Atendidas", atend_c)
+
+        st.markdown("---")
+
+        if canc_c > 0:
+            st.error(
+                f"🚨 **ALERTA PARA MÉDICOS:** Se registran **{canc_c} cita(s) cancelada(s)**. Notifique al médico por WhatsApp para evitar su traslado innecesario."
+            )
+
+        tab_cit1, tab_cit2, tab_cit3 = st.tabs(
+            [
+                "📋 Agenda y Estado de Citas",
+                "📲 Generador de Notificación por WhatsApp",
+                "➕ Agendar Cita",
+            ]
+        )
+
+        with tab_cit1:
+            if citas_globales:
+                df_cit = pd.DataFrame(citas_globales)
+                st.dataframe(
+                    df_cit.drop(columns=["id"], errors="ignore"),
+                    use_container_width=True,
                 )
-                c_esp = st.selectbox(
-                    "Especialidad Médica",
+
+                st.markdown("#### 🔄 Cambiar Estado de Cita")
+                cc1, cc2 = st.columns(2)
+                with cc1:
+                    dict_c = {
+                        f"{c['Paciente']} - {c['Medico']} ({c['Fecha_Hora']})": c["id"]
+                        for c in citas_globales
+                    }
+                    c_sel = st.selectbox("Seleccionar cita:", list(dict_c.keys()))
+                    id_c_sel = dict_c[c_sel]
+                with cc2:
+                    nest_c = st.selectbox(
+                        "Nuevo Estado:", ["Pendiente", "Atendida", "Cancelada"]
+                    )
+                    if st.button("🔄 Actualizar Cita"):
+                        actualizar_estado_cita_db(id_c_sel, nest_c)
+                        st.success("¡Estado de cita actualizado!")
+                        st.rerun()
+            else:
+                st.info("No hay citas en la agenda.")
+
+        with tab_cit2:
+            st.markdown("#### 📲 Generar Mensaje de Resumen para el Médico")
+            st.write(
+                "Copie y envíe este reporte estandarizado por WhatsApp al médico al final de la tarde:"
+            )
+
+            medicos_unicos = list(
+                set([c["Medico"] for c in citas_globales])
+            ) if citas_globales else ["Dr. Pérez"]
+            med_seleccionado = st.selectbox(
+                "Seleccionar Médico para Notificar:", medicos_unicos
+            )
+
+            citas_medico = [
+                c
+                for c in citas_globales
+                if c["Medico"] == med_seleccionado and c["Estado"] == "Pendiente"
+            ]
+
+            msg_whatsapp = f"""*REPORTE DE AGENDA DE ADMISIÓN - CLÍNICA*
+Estimado(a) *{med_seleccionado}*, le saludamos de Admisión.
+Le informamos sus pacientes confirmados para su próxima consulta:
+
+"""
+            if citas_medico:
+                for idx, cm in enumerate(citas_medico, 1):
+                    msg_whatsapp += f"{idx}. {cm['Paciente']} | Hora: {cm['Fecha_Hora']} | Motivo: {cm['Motivo']}\n"
+                msg_whatsapp += f"\nTotal de pacientes: *{len(citas_medico)}*."
+            else:
+                msg_whatsapp += "Por el momento no registra pacientes agendados."
+
+            st.code(msg_whatsapp, language="text")
+            st.info(
+                "💡 **Consejo:** Copie este texto y péguelo directamente en el chat de WhatsApp del especialista."
+            )
+
+        with tab_cit3:
+            st.markdown("#### Agendar Nueva Cita")
+            with st.form("form_cita_nueva", clear_on_submit=True):
+                cn_pac = st.text_input("Paciente *")
+                cn_med = st.text_input("Médico Especialista *")
+                cn_esp = st.selectbox(
+                    "Especialidad",
                     [
                         "Medicina General",
                         "Pediatría",
@@ -1416,150 +784,358 @@ Responsable: {p_medico} ({datos_usuario['tipo']})
                         "Traumatología",
                     ],
                 )
-                c_fec = st.text_input(
-                    "Fecha y Hora de la Cita (ej. 2026-10-15 09:00)",
+                cn_fec = st.text_input(
+                    "Fecha y Hora",
                     value=pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
                 )
-                c_mot = st.text_area("Motivo de Consulta")
+                cn_mot = st.text_area("Motivo")
 
-                btn_cita = st.form_submit_button("📅 Confirmar y Guardar Cita")
-                if btn_cita:
-                    if not c_nom.strip():
-                        st.error("Ingrese el nombre del paciente.")
+                if st.form_submit_button("📅 Guardar Cita"):
+                    if not cn_pac or not cn_med:
+                        st.error("Complete el paciente y médico.")
                     else:
                         guardar_cita_db(
-                            c_nom.strip(),
-                            c_med,
-                            c_esp,
-                            c_fec,
-                            c_mot,
-                            "Pendiente",
+                            cn_pac, cn_med, cn_esp, cn_fec, cn_mot, "Pendiente"
                         )
-                        st.success(f"¡Cita registrada para {c_nom}!")
+                        st.success("¡Cita agendada con éxito!")
                         st.rerun()
 
     # ==========================================
-    # MÓDULO 6: CONTABILIDAD Y FINANZAS (NUEVO)
+    # MÓDULO 3: CONTABILIDAD Y CAJA
     # ==========================================
-    elif modulo_principal == "6. Contabilidad y Balance Financiero Clínico":
-        st.subheader("💰 Balance Contable y Control de Flujo Financiero")
+    elif modulo_principal == "3. Contabilidad, Cierre de Caja y Balance Financiero":
+        st.subheader("💰 Control de Caja Diaria, Facturación y Balance Contable")
         st.write(
-            "Auditoría económica de ingresos, egresos, rentabilidad y alertas de desempeño financiero."
+            "Registra pagos en efectivo, punto de venta, pago móvil y transferencias, asegurando un cuadre perfecto al final del turno."
         )
 
         transacciones = obtener_contabilidad_db()
 
-        ingresos_totales = sum(
-            [t["Monto"] for t in transacciones if t["Tipo"] == "Ingreso"]
-        )
-        egresos_totales = sum(
-            [t["Monto"] for t in transacciones if t["Tipo"] == "Egreso"]
-        )
-        balance_neto = ingresos_totales - egresos_totales
+        ingresos = sum([t["Monto"] for t in transacciones if t["Tipo"] == "Ingreso"])
+        egresos = sum([t["Monto"] for t in transacciones if t["Tipo"] == "Egreso"])
+        balance = ingresos - egresos
 
         f1, f2, f3 = st.columns(3)
-        f1.metric("🟢 Ingresos Totales (\$)", f"\${ingresos_totales:,.2f}")
-        f2.metric("🔴 Egresos Totales (\$)", f"\${egresos_totales:,.2f}")
-        f3.metric(
-            "💵 Balance Neto / Ganancia (\$)",
-            f"\${balance_neto:,.2f}",
-            delta=f"{balance_neto:,.2f}",
-        )
+        f1.metric("🟢 Ingresos Totales ($)", f"${ingresos:,.2f}")
+        f2.metric("🔴 Egresos Totales ($)", f"${egresos:,.2f}")
+        f3.metric("💵 Balance Neto ($)", f"${balance:,.2f}", delta=f"${balance:,.2f}")
 
         st.markdown("---")
 
-        # Alerta de tendencia económica (Subidas / Caídas)
-        if balance_neto > 0:
-            st.success(
-                f"📈 **Tendencia Financiera Positiva:** La clínica presenta un superávit neto de **\${balance_neto:,.2f}**."
-            )
-        elif balance_neto < 0:
-            st.error(
-                f"📉 **Alerta de Caída Financiera:** Los egresos superan los ingresos con un déficit de **\${balance_neto:,.2f}**."
-            )
-        else:
-            st.info("⚖️ **Punto de Equilibrio:** Los ingresos y egresos están igualados.")
-
-        tab_fin1, tab_fin2 = st.tabs(
-            [
-                "📊 Historial de Transacciones Financieras",
-                "➕ Registrar Ingreso / Egreso",
-            ]
+        tab_f1, tab_f2 = st.tabs(
+            ["📊 Historial de Transacciones y Cierre", "➕ Registrar Cobro / Pago"]
         )
 
-        with tab_fin1:
+        with tab_f1:
             if transacciones:
                 df_fin = pd.DataFrame(transacciones)
-
                 st.dataframe(
                     df_fin.drop(columns=["id"], errors="ignore"),
                     use_container_width=True,
                 )
 
-                st.markdown("#### 📈 Comparativa de Flujo de Capital")
-                summary_df = (
-                    df_fin.groupby("Tipo")["Monto"]
+                st.markdown("#### 💳 Desglose por Método de Pago en Caja")
+                df_metodos = (
+                    df_fin[df_fin["Tipo"] == "Ingreso"]
+                    .groupby("Metodo_Pago")["Monto"]
                     .sum()
                     .reset_index()
-                    .set_index("Tipo")
                 )
-                st.bar_chart(summary_df)
+                st.dataframe(df_metodos, use_container_width=True)
 
-                csv_fin = df_fin.to_csv(index=False).encode("utf-8")
+                csv_f = df_fin.to_csv(index=False).encode("utf-8")
                 st.download_button(
-                    label="📥 Descargar Balance Contable (CSV)",
-                    data=csv_fin,
-                    file_name="balance_contable_satr.csv",
-                    mime="text/csv",
+                    "📥 Descargar Balance de Caja (CSV)",
+                    csv_f,
+                    "caja_admision.csv",
+                    "text/csv",
                 )
             else:
-                st.info("No hay registros contables en el sistema.")
+                st.info("No hay transacciones registradas.")
 
-        with tab_fin2:
-            st.markdown("#### Registrar Movimiento Financiero")
-            with st.form("form_finanzas", clear_on_submit=True):
-                col_f1, col_f2 = st.columns(2)
-                with col_f1:
-                    f_concepto = st.text_input(
-                        "Concepto / Descripción del Pago *"
+        with tab_f2:
+            st.markdown("#### Registrar Transacción en Caja")
+            with st.form("form_fin", clear_on_submit=True):
+                cf1, cf2 = st.columns(2)
+                with cf1:
+                    fn_con = st.text_input("Concepto / Factura N° *")
+                    fn_mon = st.number_input(
+                        "Monto ($) *", min_value=0.01, value=50.0, step=5.0
                     )
-                    f_monto = st.number_input(
-                        "Monto (\$)", min_value=0.01, value=100.0, step=10.0
+                    fn_tip = st.selectbox("Tipo", ["Ingreso", "Egreso"])
+                with cf2:
+                    fn_met = st.selectbox(
+                        "Método de Pago *",
+                        [
+                            "Efectivo ($ / Bs)",
+                            "Punto de Venta (Débito)",
+                            "Punto de Venta (Crédito)",
+                            "Pago Móvil",
+                            "Transferencia Bancaria",
+                            "Caseha / Crédito Institucional",
+                        ],
                     )
-                with col_f2:
-                    f_tipo = st.selectbox(
-                        "Tipo de Movimiento", ["Ingreso", "Egreso"]
-                    )
-                    f_cat = st.selectbox(
+                    fn_cat = st.selectbox(
                         "Categoría",
                         [
                             "Consulta Médica",
-                            "Hospitalización",
-                            "Cirugía y Quirofano",
-                            "Farmacia / Insumos",
-                            "Nómina / Honorarios",
-                            "Mantenimiento y Servicios",
-                            "Otro",
+                            "Estudio RX / Imagen",
+                            "Exámenes de Laboratorio",
+                            "Procedimiento / Cirugía",
+                            "Insumos / Varios",
                         ],
                     )
 
-                f_fecha = st.text_input(
-                    "Fecha del Registro",
+                fn_fec = st.text_input(
+                    "Fecha y Hora",
                     value=pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
                 )
 
-                btn_fin = st.form_submit_button("💾 Guardar Transacción")
-                if btn_fin:
-                    if not f_concepto.strip():
-                        st.error("Ingrese el concepto del movimiento.")
+                if st.form_submit_button("💾 Guardar en Caja"):
+                    if not fn_con.strip():
+                        st.error("Ingrese el concepto.")
                     else:
                         guardar_transaccion_db(
-                            f_fecha,
-                            f_concepto.strip(),
-                            f_tipo,
-                            f_monto,
-                            f_cat,
+                            fn_fec,
+                            fn_con.strip(),
+                            fn_tip,
+                            fn_met,
+                            fn_mon,
+                            fn_cat,
                             datos_usuario["nombre"],
                         )
-                        st.success("¡Transacción contable registrada con éxito!")
+                        st.success("¡Transacción registrada en caja!")
                         st.rerun()
+
+    # ==========================================
+    # MÓDULO 4: AUDITORÍA DE EXPEDIENTES Y QR
+    # ==========================================
+    elif modulo_principal == "4. Auditoría de Expedientes e Historia Clínica (QR)":
+        st.subheader("📋 Módulo de Auditoría y Verificación de Expedientes")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            hc_id = st.text_input("ID o Código de Historia Clínica", placeholder="Ej: HC-2026-089")
+            responsable = st.text_input("Responsable / Auditor", value=datos_usuario["nombre"])
+            especialidad = st.selectbox(
+                "Área / Servicio",
+                [
+                    "Registro y Estadística de la Salud",
+                    "Medicina General",
+                    "Pediatría",
+                    "Cardiología",
+                    "Ginecología",
+                    "Cirugía",
+                ],
+            )
+
+        with col2:
+            st.markdown("**Requisitos Obligatorios:**")
+            firma = st.checkbox("¿Cuenta con firma y sello médico?")
+            consentimiento = st.checkbox("¿Tiene consentimiento informado adjunto?")
+            cie10 = st.checkbox("¿Tiene codificación CIE-10 correcta?")
+            lab = st.checkbox("¿Resultados de laboratorio adjuntos?")
+
+        if st.button("🚀 Evaluar y Generar QR"):
+            if not hc_id:
+                st.error("Ingrese el código de la historia clínica.")
+            elif firma and consentimiento and cie10 and lab:
+                st.success(f"🎉 ¡Expediente {hc_id} aprobado! Estado: 🟢 VERDE")
+
+                fecha_actual = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
+                guardar_historial_db(
+                    datos_usuario["nombre"],
+                    datos_usuario["tipo"],
+                    datos_usuario["email"],
+                    hc_id,
+                    especialidad,
+                    "APROBADO (VERDE)",
+                    fecha_actual,
+                )
+
+                qr_data = f"SATR - HC: {hc_id} | Resp: {responsable} | Área: {especialidad} | Estado: VERDE"
+                img = qrcode.make(qr_data)
+                buffered = BytesIO()
+                img.save(buffered, format="PNG")
+                img_str = base64.b64encode(buffered.getvalue()).decode()
+
+                st.markdown("### 📱 Código QR de Validación Oficial:")
+                st.markdown(
+                    f'<img src="data:image/png;base64,{img_str}" width="200">',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.error("❌ Expediente incompleto. Estado: 🔴 ROJO / AMARILLO.")
+
+    # ==========================================
+    # MÓDULO 5: BIOESTADÍSTICA (OMS)
+    # ==========================================
+    elif modulo_principal == "5. Central Bioestadística e Indicadores (Nivel OMS)":
+        st.subheader("🚀 Central Bioestadística e Indicadores de Rendimiento Clínico")
+
+        sub_est = st.radio(
+            "Seleccione la función:",
+            [
+                "Indicadores Hospitalarios y Semáforo de Saturación",
+                "Estadística Descriptiva, Frecuencias y Varianza",
+            ],
+        )
+
+        if sub_est == "Indicadores Hospitalarios y Semáforo de Saturación":
+            col_i1, col_i2 = st.columns(2)
+            with col_i1:
+                total_camas = st.number_input("Camas instaladas", min_value=0, value=60, step=1)
+                dias_periodo = st.number_input("Días del período", min_value=0, value=30, step=1)
+            with col_i2:
+                dias_paciente = st.number_input("Días-paciente acumulados", min_value=0, value=1350, step=1)
+                pacientes_egresos = st.number_input("Total egresos", min_value=0, value=148, step=1)
+
+            if st.button("⚙️ Calcular Indicadores"):
+                if total_camas <= 0 or dias_periodo <= 0 or pacientes_egresos <= 0:
+                    st.error("Valores deben ser mayores a cero.")
+                else:
+                    ocupacion = (dias_paciente / (total_camas * dias_periodo)) * 100
+                    estancia_media = dias_paciente / pacientes_egresos
+                    giro_cama = pacientes_egresos / total_camas
+
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Ocupación de Camas", f"{ocupacion:.2f}%")
+                    m2.metric("Estancia Promedio", f"{estancia_media:.2f} días")
+                    m3.metric("Giro de Cama", f"{giro_cama:.2f} veces")
+
+                    if ocupacion > 85.0:
+                        st.error("🔴 SATURACIÓN CRÍTICA (>85%)")
+                    elif 75.0 <= ocupacion <= 85.0:
+                        st.success("🟢 EFICIENCIA ÓPTIMA (75%-85%)")
+                    else:
+                        st.warning("🟡 SUBUTILIZACIÓN (<75%)")
+
+        else:
+            input_datos = st.text_input(
+                "Ingrese datos numéricos separados por comas",
+                "12, 15, 14, 18, 20, 15, 22, 19, 15",
+            )
+            if st.button("🔬 Procesar Estadísticas"):
+                lista_nums = [float(x.strip()) for x in input_datos.split(",") if x.strip()]
+                if lista_nums:
+                    s_datos = pd.Series(lista_nums)
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Media", f"{s_datos.mean():.2f}")
+                    c2.metric("Mediana", f"{s_datos.median():.2f}")
+                    c3.metric("Varianza", f"{s_datos.var(ddof=0):.2f}")
+                    c4.metric("Desviación Std", f"{s_datos.std(ddof=0):.2f}")
+
+    # ==========================================
+    # MÓDULO 6: TRIAGE Y URGENCIAS
+    # ==========================================
+    elif modulo_principal == "6. Tablero de Triage y Urgencias en Tiempo Real":
+        st.subheader("🚨 Gestión y Control de Flujo de Urgencias")
+
+        triage_global = obtener_triage_db()
+
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Total Pacientes", len(triage_global))
+        k2.metric("En Espera", len([p for p in triage_global if p["Estado"] == "En Espera"]))
+        k3.metric("En Atención", len([p for p in triage_global if p["Estado"] == "En Atención"]))
+
+        with st.form("form_tri", clear_on_submit=True):
+            npac = st.text_input("Nombre del Paciente *")
+            ntri = st.selectbox(
+                "Nivel Triage",
+                [
+                    "Nivel 1 - Resucitación (Rojo)",
+                    "Nivel 2 - Emergencia (Naranja)",
+                    "Nivel 3 - Urgencia (Amarillo)",
+                    "Nivel 4 - Menor Urgencia (Verde)",
+                    "Nivel 5 - No Urgente (Azul)",
+                ],
+            )
+            nest = st.selectbox("Estado Inicial", ["En Espera", "En Atención"])
+
+            if st.form_submit_button("🚀 Registrar en Triage"):
+                if npac:
+                    guardar_triage_db(
+                        npac,
+                        ntri,
+                        nest,
+                        pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        datos_usuario["nombre"],
+                    )
+                    st.success("¡Paciente registrado en Triage!")
+                    st.rerun()
+
+        if triage_global:
+            st.dataframe(pd.DataFrame(triage_global), use_container_width=True)
+
+    # ==========================================
+    # MÓDULO 7: ASISTENTE MÉDICO DE GUARDIA
+    # ==========================================
+    elif modulo_principal == "7. Asistente Médico de Guardia (CIE-10, SOAP y Cálculos)":
+        st.subheader("🩺 Utilidades Médicas de Guardia")
+
+        sub_g = st.selectbox(
+            "Herramienta:",
+            ["📖 Buscador CIE-10", "📝 Redactor Nota SOAP", "🧮 Calculadora IMC y Goteo"],
+        )
+
+        if sub_g == "📖 Buscador CIE-10":
+            st.write("Buscador rápido de códigos de diagnóstico frecuentes.")
+            b_cie = [
+                {"Código": "J02.9", "Diagnóstico": "Faringitis aguda"},
+                {"Código": "I10", "Diagnóstico": "Hipertensión esencial"},
+                {"Código": "A90", "Diagnóstico": "Fiebre del dengue"},
+                {"Código": "E11.9", "Diagnóstico": "Diabetes mellitus tipo 2"},
+            ]
+            st.dataframe(pd.DataFrame(b_cie), use_container_width=True)
+
+        elif sub_g == "📝 Redactor Nota SOAP":
+            st.write("Generador de nota clínica estructurada.")
+            p_n = st.text_input("Nombre Paciente")
+            p_s = st.text_area("Subjetivo (S)")
+            p_o = st.text_area("Objetivo (O)")
+            p_a = st.text_area("Análisis (A)")
+            p_p = st.text_area("Plan (P)")
+
+            if st.button("📄 Generar Nota"):
+                nota_txt = f"PATIENT: {p_n}\nS: {p_s}\nO: {p_o}\nA: {p_a}\nP: {p_p}"
+                st.code(nota_txt)
+
+        else:
+            p_kg = st.number_input("Peso (kg)", value=70.0)
+            t_m = st.number_input("Talla (m)", value=1.70)
+            if st.button("⚖️ Calcular IMC"):
+                imc_v = p_kg / (t_m**2)
+                st.metric("IMC", f"{imc_v:.2f}")
+
+    # ==========================================
+    # MÓDULO 8: ALMACÉN E INSUMOS DE ADMISIÓN
+    # ==========================================
+    elif modulo_principal == "8. Almacén e Insumos de Admisión":
+        st.subheader("📦 Control de Insumos del Área de Admisión")
+        st.write("Evita quedarte sin resmas de papel o planillas de Seguros Miranda a mitad del turno.")
+
+        insumos_data = obtener_insumos_db()
+
+        for ins in insumos_data:
+            if ins["cantidad"] <= ins["minimo_requerido"]:
+                st.error(
+                    f"⚠️ **ALERTA DE ALMACÉN:** Quedan solo **{ins['cantidad']} {ins['item']}**. ¡Ir al almacén a reponer!"
+                )
+
+        if insumos_data:
+            df_ins = pd.DataFrame(insumos_data)
+            st.dataframe(df_ins, use_container_width=True)
+
+            st.markdown("---")
+            st.markdown("#### 🔄 Actualizar Inventario de Admisión")
+            ci1, ci2 = st.columns(2)
+            with ci1:
+                dict_ins = {ins["item"]: ins["id"] for ins in insumos_data}
+                item_sel = st.selectbox("Seleccionar Insumo:", list(dict_ins.keys()))
+                id_item_sel = dict_ins[item_sel]
+            with ci2:
+                nueva_cant_ins = st.number_input("Nueva Cantidad Disponible", min_value=0, value=5, step=1)
+                if st.button("💾 Actualizar Stock"):
+                    actualizar_insumo_db(id_item_sel, nueva_cant_ins)
+                    st.success("¡Stock actualizado!")
+                    st.rerun()
